@@ -187,6 +187,11 @@ class Settings(BaseSettings):
                 ("MODEL_HISTORY_SIZE", self.MODEL_HISTORY_SIZE),
                 ("ANOMALY_THRESHOLD", self.ANOMALY_THRESHOLD),
             ],
+            "Gatekeeper": [
+                ("use_gatekeeper", self.use_gatekeeper),
+                ("gatekeeper_l2_factor", self.gatekeeper_l2_factor),
+                ("gatekeeper_max_threshold", self.gatekeeper_max_threshold),
+            ],
             "Differential Privacy": [
                 ("USE_DP", self.USE_DP),
                 ("DP_NOISE_MULTIPLIER", self.DP_NOISE_MULTIPLIER),

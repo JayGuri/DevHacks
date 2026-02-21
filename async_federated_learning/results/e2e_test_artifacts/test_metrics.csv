@@ -1,0 +1,7 @@
+experiment_name,round,accuracy
+E1 Baseline,5,0.5
+E1 Baseline,10,0.7
+E1 Baseline,15,0.9
+E2 FedAvg Attack,5,0.5
+E2 FedAvg Attack,10,0.2
+E2 FedAvg Attack,15,0.1
