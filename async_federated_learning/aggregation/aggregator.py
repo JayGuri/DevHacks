@@ -18,13 +18,14 @@ import numpy as np
 from aggregation.coordinate_median import coordinate_median
 from aggregation.fedavg import fedavg
 from aggregation.reputation import reputation_aggregated
+from aggregation.staleness import compute_staleness_weights, combine_trust_weights
 from aggregation.trimmed_mean import trimmed_mean
 from detection.anomaly import check_l2_norm
 from detection.sabd import run_sabd
 
 logger = logging.getLogger(__name__)
 
-_AVAILABLE_METHODS = ["coordinate_median", "fedavg", "reputation", "trimmed_mean"]
+_AVAILABLE_METHODS = ["coordinate_median", "fedavg", "reputation", "staleness_aware", "trimmed_mean"]
 
 
 def get_aggregator(method_name: str, config=None):
@@ -62,6 +63,20 @@ def get_aggregator(method_name: str, config=None):
     if name == "reputation":
         logger.info("Aggregator: reputation_aggregated (SABD-aware).")
         return reputation_aggregated
+
+    if name == "staleness_aware":
+        logger.info("Aggregator: staleness_aware (staleness decay + reputation blend).")
+        def _staleness_aware(updates, weights=None):
+            staleness_ws = compute_staleness_weights(updates, current_round=0)
+            sample_counts = [
+                u.get("num_samples", 1) if isinstance(u, dict) else 1
+                for u in updates
+            ]
+            rep_ws = weights if weights is not None else [1.0 / max(len(updates), 1)] * len(updates)
+            combined = combine_trust_weights(staleness_ws, rep_ws, sample_counts)
+            weight_dicts = [u["weights"] if isinstance(u, dict) else u for u in updates]
+            return fedavg(weight_dicts, weights=combined)
+        return _staleness_aware
 
     raise ValueError(
         f"Unknown aggregation method '{method_name}'. "
@@ -145,6 +160,23 @@ class Aggregator:
             result.elapsed_ms = (time.time() - start) * 1000
             return result
 
+        # --- Staleness weights (computed for all strategies, used selectively) ---
+        staleness_ws = compute_staleness_weights(
+            passed_updates,
+            current_round,
+            decay_fn=getattr(self.config, 'STALENESS_DECAY_FN', 'polynomial'),
+            lam=getattr(self.config, 'STALENESS_LAMBDA', 0.1),
+            alpha=getattr(self.config, 'STALENESS_ALPHA', 0.5),
+        )
+        result.metadata["staleness_weights"] = {
+            u.get("client_id", f"c{i}"): round(w, 4)
+            for i, (u, w) in enumerate(zip(passed_updates, staleness_ws))
+        }
+        result.metadata["staleness_values"] = {
+            u.get("client_id", f"c{i}"): max(0, current_round - u.get("global_round_received", 0))
+            for i, u in enumerate(passed_updates)
+        }
+
         # --- Layer 2: Strategy-specific aggregation ---
         weight_dicts = [u["weights"] for u in passed_updates]
         client_ids = [u.get("client_id", "unknown") for u in passed_updates]
@@ -172,6 +204,26 @@ class Aggregator:
             sample_weights = [u.get("num_samples", 1) for u in passed_updates]
             result.aggregated_weights = fedavg(weight_dicts, weights=sample_weights)
             result.accepted_clients = client_ids
+        elif self.strategy == "staleness_aware":
+            rep_weights = result.metadata.get("reputation_weights")
+            if rep_weights is None:
+                rep_weights = [1.0 / len(passed_updates)] * len(passed_updates)
+            sample_counts = [u.get("num_samples", 1) for u in passed_updates]
+            rep_blend = getattr(self.config, 'STALENESS_REPUTATION_WEIGHT', 0.5)
+            combined_weights = combine_trust_weights(
+                staleness_ws, rep_weights, sample_counts, rep_blend=rep_blend
+            )
+            total = sum(combined_weights)
+            if total <= 0:
+                logger.warning("staleness_aware: combined weights sum to zero, falling back to fedavg")
+                result.aggregated_weights = fedavg(weight_dicts)
+            else:
+                result.aggregated_weights = fedavg(weight_dicts, weights=combined_weights)
+            result.accepted_clients = client_ids
+            result.trust_scores = {
+                cid: round(w, 4)
+                for cid, w in zip(client_ids, staleness_ws)
+            }
         else:
             logger.warning("Unknown strategy '%s', falling back to fedavg", self.strategy)
             result.aggregated_weights = fedavg(weight_dicts)
