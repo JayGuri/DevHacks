@@ -98,6 +98,7 @@ export const useStore = create((set) => ({
 
   // ── User-joined projects (mock join flow) ──────────────
   userProjects: {
+    u1: ["p1", "p2", "p3"],
     u2: ["p1", "p3"],
     u3: ["p1"],
     u4: ["p2"],
