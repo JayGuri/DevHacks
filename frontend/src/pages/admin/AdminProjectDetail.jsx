@@ -239,13 +239,13 @@ export default function AdminProjectDetail() {
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 <Card>
                   <CardHeader><CardTitle className="text-sm">Convergence</CardTitle></CardHeader>
-                  <CardContent className="h-64 min-h-[200px]">
+                  <CardContent className="h-64 min-h-[200px] min-w-0">
                     <ConvergenceChart rounds={fl.allRounds} viewMode={viewMode} />
                   </CardContent>
                 </Card>
                 <Card>
                   <CardHeader><CardTitle className="text-sm">Timeline</CardTitle></CardHeader>
-                  <CardContent className="h-48 min-h-[200px]">
+                  <CardContent className="h-48 min-h-[200px] min-w-0">
                     <GanttTimeline ganttBlocks={fl.ganttBlocks} aggTriggerTimes={fl.aggTriggerTimes} nodes={fl.nodes} viewMode={viewMode} />
                   </CardContent>
                 </Card>

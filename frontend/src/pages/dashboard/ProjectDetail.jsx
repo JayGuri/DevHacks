@@ -181,7 +181,7 @@ export default function ProjectDetail() {
                     </Card>
                     <Card>
                       <CardHeader><CardTitle className="text-sm">Convergence (read-only)</CardTitle></CardHeader>
-                      <CardContent className="h-64 min-h-[200px]">
+                      <CardContent className="h-64 min-h-[200px] min-w-0">
                         <ConvergenceChart rounds={fl.allRounds} viewMode={viewMode} />
                       </CardContent>
                     </Card>
@@ -195,7 +195,7 @@ export default function ProjectDetail() {
               <div className="space-y-6">
                 <Card>
                   <CardHeader><CardTitle className="text-sm">Model Convergence</CardTitle></CardHeader>
-                  <CardContent className="h-72 min-h-[200px]">
+                  <CardContent className="h-72 min-h-[200px] min-w-0">
                     <ConvergenceChart rounds={fl.allRounds} viewMode={viewMode} />
                   </CardContent>
                 </Card>
@@ -207,7 +207,7 @@ export default function ProjectDetail() {
                 </Card>
                 <Card>
                   <CardHeader><CardTitle className="text-sm">Training Timeline</CardTitle></CardHeader>
-                  <CardContent className="h-64 min-h-[200px]">
+                  <CardContent className="h-64 min-h-[200px] min-w-0">
                     <GanttTimeline ganttBlocks={fl.ganttBlocks} aggTriggerTimes={fl.aggTriggerTimes} nodes={fl.nodes} viewMode={viewMode} />
                   </CardContent>
                 </Card>
