@@ -49,6 +49,7 @@ flagged as Byzantine are discarded.
 import logging
 import queue
 import threading
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -59,6 +60,7 @@ from async_federated_learning.config import Config
 from async_federated_learning.detection.anomaly import AnomalyDetector
 from async_federated_learning.detection.gatekeeper import Gatekeeper
 from async_federated_learning.models.cnn import FLModel, evaluate_model
+from async_federated_learning.privacy.secure_aggregation import SecureAggregationProtocol
 from async_federated_learning.server.model_history import ModelHistoryBuffer
 
 logger = logging.getLogger(__name__)
@@ -119,6 +121,10 @@ class AsyncFLServer:
         self.global_round: int = 0
         self.update_queue: queue.Queue = queue.Queue()
         self._model_lock = threading.Lock()
+        
+        # Secure Aggregation protocol manager (if enabled)
+        self.secure_agg_enabled = config.use_secure_aggregation
+        self.secure_agg_protocol: Optional[SecureAggregationProtocol] = None
         
         # Async aggregation trigger
         self.min_updates_for_aggregation = max(1, int(config.num_clients * 0.5))  # 50% quorum
@@ -396,11 +402,12 @@ class AsyncFLServer:
         Sequence
         --------
         1. Increment ``global_round``.
-        2. Broadcast current global weights to every client.
-        3. Spawn one thread per client (delay + train + enqueue).
-        4. If async_mode: aggregate as updates arrive (50% quorum).
+        2. Secure Aggregation: Collect and broadcast public keys (if enabled).
+        3. Broadcast current global weights to every client.
+        4. Spawn one thread per client (delay + train + enqueue).
+        5. If async_mode: aggregate as updates arrive (50% quorum).
            If sync_mode: wait for all clients, then aggregate once.
-        5. Evaluate every ``eval_every_n_rounds`` rounds.
+        6. Evaluate every ``eval_every_n_rounds`` rounds.
 
         Parameters
         ----------
@@ -413,17 +420,40 @@ class AsyncFLServer:
         self.global_round += 1
         logger.info("=== Starting round %d (async_mode=%s) ===", self.global_round, self.async_mode)
 
-        # ── Step 2: broadcast ───────────────────────────────────────────
+        # ── Step 2: Secure Aggregation Key Agreement ────────────────────
+        all_client_ids = [c.client_id for c in clients]
+        
+        if self.secure_agg_enabled:
+            # Initialize secure aggregation protocol for this round
+            self.secure_agg_protocol = SecureAggregationProtocol(self.global_round)
+            
+            # Collect public keys from all clients
+            for client in clients:
+                public_key = client.get_secure_agg_public_key()
+                if public_key is not None:
+                    self.secure_agg_protocol.register_client(client.client_id, public_key)
+            
+            # Broadcast all public keys to all clients
+            all_public_keys = self.secure_agg_protocol.get_public_keys()
+            for client in clients:
+                client.setup_secure_aggregation_round(all_public_keys, self.global_round)
+            
+            logger.info(
+                f"Secure aggregation setup complete: {len(all_public_keys)} clients registered"
+            )
+
+        # ── Step 3: broadcast global model ──────────────────────────────
         global_weights = self.get_global_weights()
         for client in clients:
             client.receive_global_model(global_weights, self.global_round)
 
-        # ── Steps 3: parallel client execution ──────────────────────────
+        # ── Step 4: parallel client execution ───────────────────────────
         threads = []
 
         def client_task(c):
             c.simulate_network_delay()
-            update = c.local_train(self.global_round)
+            # Pass all_client_ids for secure aggregation masking
+            update = c.local_train(self.global_round, all_client_ids=all_client_ids)
             self.receive_update(update)
 
         for client in clients:
@@ -436,7 +466,7 @@ class AsyncFLServer:
             threads.append(t)
             t.start()
 
-        # ── Step 4: Async vs Sync aggregation ───────────────────────────
+        # ── Step 5: Async vs Sync aggregation ───────────────────────────
         if self.async_mode:
             # ASYNC MODE: Aggregate as soon as enough updates arrive
             # Don't wait for all clients - some may be slow stragglers

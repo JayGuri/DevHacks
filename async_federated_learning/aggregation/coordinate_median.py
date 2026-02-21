@@ -19,7 +19,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-def coordinate_median(updates: list, _weights: list = None) -> dict:
+def coordinate_median(updates: list, weights: list = None) -> dict:
     """
     Element-wise median across all client updates.
 

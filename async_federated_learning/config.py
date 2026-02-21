@@ -115,11 +115,16 @@ class Config:
     gatekeeper_max_threshold: float = 1000.0
 
     # ------------------------------------------------------------------
-    # Differential Privacy
+    # Privacy Mechanisms (mutually exclusive or combined)
     # ------------------------------------------------------------------
-    use_dp: bool = True
+    # Differential Privacy: adds noise, some accuracy loss
+    use_dp: bool = False
     dp_noise_multiplier: float = 0.1
     dp_clip_norm: float = 1.0
+    
+    # Secure Aggregation: cryptographic masking, ZERO accuracy loss
+    use_secure_aggregation: bool = True
+    secure_agg_seed: int = 42  # For reproducibility (testing only)
 
     # ------------------------------------------------------------------
     # WandB

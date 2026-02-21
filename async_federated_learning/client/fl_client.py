@@ -32,7 +32,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn
@@ -41,6 +41,7 @@ from async_federated_learning.attacks.byzantine import apply_attack
 from async_federated_learning.config import Config
 from async_federated_learning.models.cnn import FLModel
 from async_federated_learning.privacy.dp import DifferentialPrivacyMechanism
+from async_federated_learning.privacy.secure_aggregation import SecureAggregationClient
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,17 @@ class FLClient:
             if config.use_dp
             else None
         )
+        
+        # Secure Aggregation — cryptographic masking (zero accuracy loss)
+        self.secure_agg: Optional[SecureAggregationClient] = (
+            SecureAggregationClient(
+                client_id,
+                enabled=config.use_secure_aggregation,
+                seed=config.secure_agg_seed
+            )
+            if config.use_secure_aggregation
+            else None
+        )
 
         # Straggler model: 70 % fast clients, 30 % slow
         self.is_fast_client: bool = random.random() > 0.3
@@ -145,13 +157,14 @@ class FLClient:
 
         logger.info(
             "FLClient %d — byzantine=%s, attack=%s, fast=%s, "
-            "samples=%d, dp=%s, device=%s.",
+            "samples=%d, dp=%s, secure_agg=%s, device=%s.",
             client_id,
             is_byzantine,
             attack_type if is_byzantine else "N/A",
             self.is_fast_client,
             self.num_samples,
             "on" if self.dp_mechanism is not None else "off",
+            "on" if self.secure_agg is not None else "off",
             self.device,
         )
 
@@ -178,12 +191,61 @@ class FLClient:
         logger.debug(
             "Client %d received global model at round %d.", self.client_id, round_number
         )
+    
+    # ------------------------------------------------------------------
+    # Secure Aggregation Setup
+    # ------------------------------------------------------------------
+    
+    def get_secure_agg_public_key(self) -> Optional[int]:
+        """
+        Get this client's public key for secure aggregation.
+        
+        Called by the server to collect public keys for key agreement phase.
+        
+        Returns
+        -------
+        Optional[int]
+            Diffie-Hellman public key, or None if secure aggregation disabled
+        """
+        if self.secure_agg is None:
+            return None
+        return self.secure_agg.get_public_key()
+    
+    def setup_secure_aggregation_round(
+        self, 
+        all_public_keys: Dict[int, int],
+        round_number: int
+    ) -> None:
+        """
+        Setup secure aggregation for a new FL round.
+        
+        Called after the server broadcasts all clients' public keys.
+        Clients compute pairwise shared secrets for zero-sum masking.
+        
+        Parameters
+        ----------
+        all_public_keys : Dict[int, int]
+            Public keys from all participating clients
+        round_number : int
+            Current FL round
+        """
+        if self.secure_agg is None:
+            return
+        
+        self.secure_agg.setup_round(all_public_keys, round_number)
+        logger.debug(
+            f"Client {self.client_id}: secure aggregation setup complete for round {round_number}"
+        )
 
     # ------------------------------------------------------------------
     # Local training
     # ------------------------------------------------------------------
 
-    def local_train(self, _global_round: int) -> ClientUpdate:
+    def local_train(
+        self, 
+        _global_round: int,
+        all_client_ids: Optional[List[int]] = None
+    ) -> ClientUpdate:
         """
         Run local training and return a ``ClientUpdate``.
 
@@ -193,8 +255,9 @@ class FLClient:
         2. Local SGD for ``config.local_epochs`` epochs.
         3. Compute weight delta:  Δ = θ_local − θ_start.
         4. Apply DP (clip + noise) if enabled.
-        5. Inject Byzantine attack (after DP) if malicious.
-        6. Build and return ``ClientUpdate``.
+        5. Apply Secure Aggregation mask (zero-sum) if enabled.
+        6. Inject Byzantine attack (after DP/masking) if malicious.
+        7. Build and return ``ClientUpdate``.
 
         DP before attack rationale
         --------------------------
@@ -255,8 +318,20 @@ class FLClient:
                 self.config.dp_clip_norm,
                 self.config.dp_noise_multiplier,
             )
+        
+        # ── Step 5: Secure Aggregation — apply zero-sum mask ───────────
+        if self.secure_agg is not None and all_client_ids is not None:
+            weight_delta = self.secure_agg.mask_update(
+                weight_delta,
+                all_client_ids,
+                self.current_round
+            )
+            logger.debug(
+                "Client %d — Secure aggregation mask applied (round %d).",
+                self.client_id, self.current_round
+            )
 
-        # ── Step 5: Byzantine attack (after DP) ─────────────────────────
+        # ── Step 6: Byzantine attack (after DP/masking) ────────────────
         if self.is_byzantine:
             weight_delta = apply_attack(weight_delta, self.attack_type)
             logger.debug(
@@ -264,7 +339,7 @@ class FLClient:
                 self.client_id, self.attack_type,
             )
 
-        # ── Step 6: build ClientUpdate ───────────────────────────────────
+        # ── Step 7: build ClientUpdate ───────────────────────────────────
         return ClientUpdate(
             client_id=self.client_id,
             weight_delta=weight_delta,
