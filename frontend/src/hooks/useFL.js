@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { toast } from "sonner";
 import { useStore } from "@/lib/store";
 import {
   MOCK_PROJECTS,
@@ -6,6 +7,23 @@ import {
   generateRoundMetrics,
 } from "@/lib/mockData";
 import { randomBetween, clampVal } from "@/lib/utils";
+
+const NULL_FL = {
+  project: null,
+  nodes: [],
+  latestRound: null,
+  allRounds: [],
+  ganttBlocks: [],
+  aggTriggerTimes: [],
+  isRunning: false,
+  currentRound: 0,
+  totalRounds: 50,
+  blockNode: () => {},
+  unblockNode: () => {},
+  setAggregationMethod: () => {},
+  pause: () => {},
+  resume: () => {},
+};
 
 export default function useFL(projectId) {
   const nodesByProject = useStore((s) => s.nodesByProject);
@@ -39,7 +57,7 @@ export default function useFL(projectId) {
 
   // Seed nodes and initial rounds on first mount
   useEffect(() => {
-    if (!project) return;
+    if (!project || !projectId) return;
 
     const existingNodes = useStore.getState().nodesByProject[projectId];
     if (!existingNodes || existingNodes.length === 0) {
@@ -152,6 +170,7 @@ export default function useFL(projectId) {
 
   // Start / stop the simulation interval
   useEffect(() => {
+    if (!projectId) return;
     if (isRunning) {
       intervalRef.current = setInterval(tick, 2000);
     } else {
@@ -164,13 +183,15 @@ export default function useFL(projectId) {
     (nodeId) => {
       storeBlockNode(projectId, nodeId);
       const node = nodesRef.current.find((n) => n.nodeId === nodeId);
+      const displayId = node?.displayId || nodeId;
       pushActivity({
         type: "block",
         nodeId,
-        displayId: node?.displayId || nodeId,
+        displayId,
         projectId,
         timestamp: new Date().toISOString(),
       });
+      toast.success(`${displayId} blocked`);
     },
     [projectId, storeBlockNode, pushActivity]
   );
@@ -179,16 +200,20 @@ export default function useFL(projectId) {
     (nodeId) => {
       storeUnblockNode(projectId, nodeId);
       const node = nodesRef.current.find((n) => n.nodeId === nodeId);
+      const displayId = node?.displayId || nodeId;
       pushActivity({
         type: "unblock",
         nodeId,
-        displayId: node?.displayId || nodeId,
+        displayId,
         projectId,
         timestamp: new Date().toISOString(),
       });
+      toast.success(`${displayId} unblocked`);
     },
     [projectId, storeUnblockNode, pushActivity]
   );
+
+  if (!projectId) return NULL_FL;
 
   return {
     project,

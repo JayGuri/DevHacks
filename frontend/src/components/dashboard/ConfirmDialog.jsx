@@ -1,7 +1,6 @@
+import { useState } from "react";
 import {
   AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
@@ -9,17 +8,25 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 
 export default function ConfirmDialog({
   trigger,
   title,
   description,
-  actionLabel = "Confirm",
-  variant = "default",
+  confirmLabel = "Confirm",
+  actionLabel,
+  destructive = false,
+  variant,
   onConfirm,
 }) {
+  const [open, setOpen] = useState(false);
+
+  const isDestructive = destructive || variant === "destructive";
+  const label = confirmLabel || actionLabel || "Confirm";
+
   return (
-    <AlertDialog>
+    <AlertDialog open={open} onOpenChange={setOpen}>
       <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
@@ -27,17 +34,18 @@ export default function ConfirmDialog({
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={onConfirm}
-            className={
-              variant === "destructive"
-                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                : ""
-            }
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant={isDestructive ? "destructive" : "default"}
+            onClick={() => {
+              onConfirm?.();
+              setOpen(false);
+            }}
           >
-            {actionLabel}
-          </AlertDialogAction>
+            {label}
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

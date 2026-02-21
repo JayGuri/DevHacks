@@ -124,13 +124,13 @@ export default function AdminOverview() {
       )}
 
       {/* Main 2-col grid */}
-      <div className="mb-6 grid gap-4 lg:grid-cols-5">
+      <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-5">
         {/* Left: convergence chart */}
         <Card className="lg:col-span-3">
           <CardHeader>
             <CardTitle className="text-sm">Multi-Project Convergence</CardTitle>
           </CardHeader>
-          <CardContent className="h-72">
+          <CardContent className="h-72 min-h-[200px]">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />

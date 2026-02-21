@@ -1,16 +1,27 @@
-# React + Vite
+# ARFL Platform
+Federated Learning Mission Control Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Setup
+```bash
+npm install
+npm run dev    # http://localhost:5173
+```
 
-Currently, two official plugins are available:
+## Demo Accounts (password: `password` for all)
+| Email | Role |
+|---|---|
+| lead@arfl.dev | Team Lead |
+| contributor1@arfl.dev | Contributor |
+| contributor2@arfl.dev | Contributor |
+| contributor3@arfl.dev | Contributor |
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## What does what
+- **Simple/Detailed toggle**: top-right of every page. Persists across sessions.
+- **Team Lead**: full admin including block nodes, change aggregator, export results.
+- **Contributor**: own node + read-only server metrics.
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Connecting real data
+Replace the `setInterval` in `src/hooks/useFL.js` with a WebSocket.
+Map server JSON to `RoundMetrics` shape from `src/lib/mockData.js`.
+Call `store.appendRound()` and `store.updateNode()` from the socket handler.
+Zero UI changes needed.
