@@ -71,3 +71,5 @@ htmlcov/
 .coverage
 
 federated_oci_platform/.env.example
+.venv
+.env    
