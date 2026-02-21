@@ -19,10 +19,11 @@ from async_federated_learning.aggregation.coordinate_median import coordinate_me
 from async_federated_learning.aggregation.fedavg import fedavg
 from async_federated_learning.aggregation.reputation import reputation_aggregated
 from async_federated_learning.aggregation.trimmed_mean import trimmed_mean
+from async_federated_learning.aggregation.ensemble import ensemble_aggregation
 
 logger = logging.getLogger(__name__)
 
-_AVAILABLE_METHODS = ["coordinate_median", "fedavg", "reputation", "trimmed_mean"]
+_AVAILABLE_METHODS = ["coordinate_median", "ensemble", "fedavg", "reputation", "trimmed_mean"]
 
 
 def get_aggregator(method_name: str, config=None):
@@ -86,6 +87,14 @@ def get_aggregator(method_name: str, config=None):
     if name == "reputation":
         logger.info("Aggregator: reputation_aggregated (SABD-aware).")
         return reputation_aggregated
+
+    if name == "ensemble":
+        beta = config.trimmed_mean_beta if config is not None else 0.1
+        logger.info("Aggregator: ensemble (trimmed_mean + coordinate_median, beta=%.2f).", beta)
+        # Wrap to bake beta into the call
+        def _ensemble(updates, weights=None):
+            return ensemble_aggregation(updates, beta=beta, weights=weights)
+        return _ensemble
 
     raise ValueError(
         f"Unknown aggregation method '{method_name}'. "
