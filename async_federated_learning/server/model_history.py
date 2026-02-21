@@ -229,10 +229,38 @@ class ModelHistory:
 
     def deserialize_weights(self, b64_str: str) -> dict:
         """Reverses serialize_weights. Returns dict of numpy arrays."""
+        MAX_WEIGHT_ELEMENTS = 100_000_000  # ~400 MB at float32
+
         packed = base64.b64decode(b64_str)
         unpacked = msgpack.unpackb(packed, raw=False)
+
+        # Security: cap total element count to prevent memory exhaustion
+        total_elements = 0
+        for val in unpacked.values():
+            if isinstance(val, list):
+                total_elements += _count_elements(val)
+            else:
+                total_elements += 1
+            if total_elements > MAX_WEIGHT_ELEMENTS:
+                raise ValueError(
+                    f"Deserialized weights exceed {MAX_WEIGHT_ELEMENTS} elements. "
+                    "Possible decompression bomb — rejecting."
+                )
+
         weights = {}
         for key, val in unpacked.items():
             k = key if isinstance(key, str) else key.decode("utf-8")
             weights[k] = np.array(val, dtype=np.float32)
         return weights
+
+
+def _count_elements(lst) -> int:
+    """Recursively count leaf elements in a nested list."""
+    if not isinstance(lst, list):
+        return 1
+    if not lst:
+        return 0
+    # Optimization: if first element is not a list, assume flat
+    if not isinstance(lst[0], list):
+        return len(lst)
+    return sum(_count_elements(item) for item in lst)

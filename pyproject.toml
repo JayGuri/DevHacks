@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arfl-devhacks"
+version = "1.0.0"
+description = "Asynchronous Robust Federated Learning Platform"
+requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
+
+[tool.setuptools.packages.find]
+include = ["async_federated_learning*", "core*", "backend*"]
+
+[tool.pytest.ini_options]
+testpaths = ["async_federated_learning/tests"]
+asyncio_mode = "auto"

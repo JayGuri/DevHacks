@@ -21,7 +21,6 @@ from models.lstm import evaluate_text_model
 from data.shakespeare_loader import ShakespearePartitioner
 from server.model_history import ModelHistory
 from server.fl_server import (
-    load_users,
     init_jwt,
     verify_token,
     connected_clients,
@@ -212,17 +211,9 @@ async def lifespan(app: FastAPI):
 
     logger.info("FedBuff server starting up...")
 
-    # Step 1: Initialize JWT and NodeRegistry (replaces legacy load_users)
-    if settings.JWT_SECRET:
-        init_jwt(settings.JWT_SECRET)
-        logger.info("JWT initialized from settings.JWT_SECRET")
-    else:
-        # Fallback for backwards compatibility — try legacy users.json
-        try:
-            load_users(settings.USERS_FILE)
-            logger.warning("Loaded JWT from legacy users.json — migrate to setup_server.py")
-        except Exception as e:
-            logger.warning("No JWT_SECRET configured and no users.json: %s", e)
+    # Step 1: Initialize JWT and NodeRegistry
+    # JWT_SECRET is read from environment by core.jwt_auth (via .env)
+    logger.info("JWT auth via core.jwt_auth (JWT_SECRET from environment)")
 
     node_registry = NodeRegistry(
         registry_file=settings.NODE_REGISTRY_FILE,
@@ -331,10 +322,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+# CORS — restrict origins to configured whitelist (fixes wildcard + credentials vuln)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -419,6 +410,29 @@ async def register_node(body: dict):
             content={"error": f"Unsupported task: {task}. Supported: {settings.SUPPORTED_TASKS}"},
         )
 
+    # Security: whitelist allowed roles to prevent privilege escalation
+    if role not in settings.ALLOWED_REGISTRATION_ROLES:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid role: {role}. Allowed: {settings.ALLOWED_REGISTRATION_ROLES}"},
+        )
+
+    # Security: validate attack parameters
+    VALID_ATTACK_TYPES = {"sign_flip_amplified", "sign_flipping", "gaussian_noise", "label_flip", None}
+    if attack_type not in VALID_ATTACK_TYPES:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid attack_type: {attack_type}. Allowed: {VALID_ATTACK_TYPES - {None}}"},
+        )
+    if attack_scale is not None:
+        try:
+            attack_scale = float(attack_scale)
+            attack_scale = max(-100.0, min(100.0, attack_scale))
+        except (TypeError, ValueError):
+            return JSONResponse(
+                status_code=400, content={"error": "attack_scale must be a number in [-100, 100]"},
+            )
+
     try:
         result = node_registry.register(
             task=task,
@@ -433,8 +447,8 @@ async def register_node(body: dict):
 
 
 @app.get("/nodes")
-async def list_nodes(task: str = Query(default=None)):
-    """List all registered nodes, optionally filtered by task."""
+async def list_nodes(task: str = Query(default=None), payload: dict = Depends(require_role("server"))):
+    """List all registered nodes, optionally filtered by task. Requires server role."""
     nodes = node_registry.list_nodes(task=task)
     return {"nodes": nodes, "count": len(nodes)}
 

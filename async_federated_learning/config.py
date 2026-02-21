@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     JWT_EXPIRY_HOURS: int = 24
     JWT_SECRET: str = ""
 
+    # Security: CORS and registration role whitelists
+    ALLOWED_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
+    ALLOWED_REGISTRATION_ROLES: List[str] = ["legitimate_client", "malicious_client"]
+
     # ------------------------------------------------------------------
     # FL Hyperparameters (merged from both branches)
     # ------------------------------------------------------------------
@@ -169,7 +173,7 @@ class Settings(BaseSettings):
     RESULTS_DIR: str = "./results"
 
     model_config = {
-        "env_file": ".env",
+        "env_file": str(Path(__file__).resolve().parents[1] / ".env"),
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }

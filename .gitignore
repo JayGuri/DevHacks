@@ -69,3 +69,5 @@ leaf/
 .pytest_cache/
 htmlcov/
 .coverage
+
+federated_oci_platform/.env.example

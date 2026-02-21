@@ -1,50 +1,22 @@
 # backend/auth/utils.py — JWT creation/verification and password hashing
 """
-Stateless auth utilities using PyJWT + bcrypt.
-JWT tokens carry user_id and role in the payload.
+Thin re-export layer: delegates to core.jwt_auth for shared JWT + bcrypt logic.
+This file exists so that existing imports in backend/auth/ continue to work.
 """
 
-import os
-from datetime import datetime, timedelta, timezone
+import sys
+from pathlib import Path
 
-import jwt
-import bcrypt
+# Ensure the repo root is on sys.path so `core.jwt_auth` is importable
+_repo_root = str(Path(__file__).resolve().parents[2])
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
-JWT_SECRET = os.getenv("JWT_SECRET", "arfl-dev-secret-change-in-production")
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRY_HOURS = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
+from core.jwt_auth import (  # noqa: E402
+    create_token,
+    decode_token,
+    hash_password,
+    verify_password,
+)
 
-
-# --------------------------------------------------------------------------
-# Password hashing
-# --------------------------------------------------------------------------
-
-def hash_password(plain: str) -> str:
-    """Hash a plaintext password with bcrypt."""
-    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-
-def verify_password(plain: str, hashed: str) -> bool:
-    """Verify a plaintext password against a bcrypt hash."""
-    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-
-
-# --------------------------------------------------------------------------
-# JWT
-# --------------------------------------------------------------------------
-
-def create_token(user_id: str, role: str) -> str:
-    """Create a JWT with user_id and role in the payload."""
-    now = datetime.now(timezone.utc)
-    payload = {
-        "sub": user_id,
-        "role": role,
-        "iat": now,
-        "exp": now + timedelta(hours=JWT_EXPIRY_HOURS),
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-
-def decode_token(token: str) -> dict:
-    """Decode and validate a JWT. Raises jwt.InvalidTokenError on failure."""
-    return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+__all__ = ["create_token", "decode_token", "hash_password", "verify_password"]
