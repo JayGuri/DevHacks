@@ -1,410 +1,313 @@
-"""
-main.py
-=======
-Entry point for the Async Robust Federated Learning (ARFL) framework.
-
-Usage examples
---------------
-# Run full 4-experiment comparison suite (default MNIST, 50 rounds)
-    python -m async_federated_learning.main
-
-# Quick smoke test (3 clients, 2 rounds — verifies all imports and plumbing)
-    python -m async_federated_learning.main --smoke_test
-
-# Verify all module imports without running training
-    python -m async_federated_learning.main --check
-
-# CIFAR-10, more clients, coordinate-median aggregation, no DP
-    python -m async_federated_learning.main \\
-        --dataset CIFAR10 --in_channels 3 --num_clients 20 \\
-        --aggregation coordinate_median --no_dp
-
-Experiment suite
-----------------
-E1: FedAvg  — No Attack  (baseline)
-E2: FedAvg  — 20% Byzantine sign-flip  (shows vulnerability)
-E3: Trimmed Mean  — 20% Byzantine  (robust aggregation)
-E4: Coordinate Median — 20% Byzantine  (robust aggregation)
-"""
-
+# main.py — FastAPI entrypoint: WebSocket, REST, SSE, startup
+import os
+import sys
+import json
+import asyncio
 import logging
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import numpy as np
-import torch
-from tqdm import tqdm
+from fastapi import FastAPI, WebSocket, Query, Depends, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-from async_federated_learning.client.fl_client import FLClient
-from async_federated_learning.config import Config
-from async_federated_learning.data.partitioner import DataPartitioner
-from async_federated_learning.detection.anomaly import AnomalyDetector
-from async_federated_learning.detection.sabd import SABDCorrector
-from async_federated_learning.evaluation.metrics import ExperimentTracker
-from async_federated_learning.models.cnn import FLModel
-from async_federated_learning.server.fl_server import AsyncFLServer
-from async_federated_learning.server.model_history import ModelHistoryBuffer
-
-# ---------------------------------------------------------------------------
-# Logging — configured at module level per spec
-# ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(name)s | %(levelname)s | %(message)s',
-    datefmt='%H:%M:%S',
+from config import settings
+from models.cnn import get_model
+from server.model_history import ModelHistory
+from server.fl_server import (
+    load_users,
+    verify_token,
+    connected_clients,
+    require_role,
+    AsyncBuffer,
+    handle_websocket,
 )
-logger = logging.getLogger(__name__)
+from aggregation.aggregator import Aggregator
+from evaluation.metrics import (
+    emit_event,
+    subscribe_sse,
+    unsubscribe_sse,
+    fl_aggregation_duration,
+)
 
-# ---------------------------------------------------------------------------
-# Derived-field names that must be stripped before passing to_dict() into
-# Config() — these are init=False fields recomputed by __post_init__.
-# ---------------------------------------------------------------------------
-_DERIVED_CONFIG_FIELDS = frozenset({'num_byzantine_clients', 'num_honest_clients'})
+# Configure logging
+logging.basicConfig(
+    level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
+    format="%(asctime)s [%(name)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("fedbuff.main")
+
+# Global state
+model_history: ModelHistory = None
+fl_buffer: AsyncBuffer = None
+aggregator: Aggregator = None
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+async def aggregation_callback(updates: list, task: str) -> None:
+    """Called by AsyncBuffer.buffer_watcher when a task buffer fills."""
+    global model_history, aggregator
 
-def set_seeds(seed: int) -> None:
-    """Set all random seeds for reproducibility."""
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
+    start_time = time.time()
+    current_round = model_history.get_round(task)
 
-
-def setup_data(config: Config) -> tuple:
-    """
-    Load dataset and partition across clients.
-
-    Returns
-    -------
-    tuple
-        ``(client_dataloaders, test_dataloader, client_indices, train_dataset)``
-    """
-    partitioner = DataPartitioner()
-    train, test = partitioner.load_dataset(config.dataset_name, config.data_dir)
-
-    client_indices = partitioner.partition_data(
-        train, config.num_clients, config.dirichlet_alpha
+    logger.info(
+        "Aggregation triggered: task=%s, round=%d, updates=%d",
+        task, current_round + 1, len(updates),
     )
-    client_dataloaders = [
-        partitioner.get_client_dataloader(train, idx, config.batch_size)
-        for idx in client_indices
-    ]
-    test_dataloader = partitioner.get_test_dataloader(test)
 
-    return client_dataloaders, test_dataloader, client_indices, train
+    # Run aggregation
+    result = aggregator.aggregate(updates, current_round, task)
 
+    if result.aggregated_weights:
+        # Compute average loss from accepted updates
+        avg_loss = np.mean([u["local_loss"] for u in updates]) if updates else 0.0
 
-def setup_clients(
-    config: Config,
-    client_dataloaders: list,
-    byzantine_fraction: float = None,
-    attack_type: str = None,
-) -> list:
-    """
-    Instantiate FL clients with correct Byzantine assignments.
+        # Update model history
+        model_history.update(task, result.aggregated_weights, avg_loss)
+        new_round = model_history.get_round(task)
 
-    The first ``num_byzantine`` clients (by index) are assigned as Byzantine.
-    An assertion verifies the count matches expectation.
+        duration = time.time() - start_time
+        fl_aggregation_duration.labels(task=task).observe(duration)
 
-    Parameters
-    ----------
-    config              : Config        Experiment configuration.
-    client_dataloaders  : list          One DataLoader per client.
-    byzantine_fraction  : float | None  Overrides ``config.byzantine_fraction``.
-    attack_type         : str | None    Overrides ``config.attack_type``.
+        # Emit round_complete event
+        await emit_event("round_complete", {
+            "task": task,
+            "round": new_round,
+            "loss": avg_loss,
+            "accepted_count": result.accepted_count,
+            "gatekeeper_rejected": result.gatekeeper_rejected,
+            "rejected_clients": result.rejected_clients,
+            "strategy": result.strategy_used,
+            "duration": round(duration, 4),
+        })
 
-    Returns
-    -------
-    list[FLClient]
-    """
-    bf  = byzantine_fraction if byzantine_fraction is not None else config.byzantine_fraction
-    at  = attack_type or config.attack_type
-    num_byz = int(config.num_clients * bf)
+        # Emit trust scores
+        for client_id, score in result.trust_scores.items():
+            await emit_event("trust_score", {
+                "client_id": client_id,
+                "task": task,
+                "score": score,
+                "round": new_round,
+            })
 
-    clients = []
-    for i, dl in enumerate(client_dataloaders):
-        is_byz = i < num_byz
-        clients.append(
-            FLClient(
-                i, dl, config,
-                is_byzantine=is_byz,
-                attack_type=at if is_byz else 'none',
-            )
+        # Broadcast updated global model to all connected clients for this task
+        latest = model_history.get_latest(task)
+        global_model_msg = {
+            "type": "global_model",
+            "task": task,
+            "round_num": latest["round"],
+            "weights": latest["weights"],
+            "version": latest["version"],
+            "timestamp": latest["timestamp"],
+        }
+        for cid, client_info in list(connected_clients.items()):
+            if client_info.get("task") == task:
+                try:
+                    await client_info["websocket"].send_json(global_model_msg)
+                except Exception as e:
+                    logger.warning("Failed to send global model to %s: %s", cid, e)
+
+        logger.info(
+            "Aggregation complete: task=%s, round=%d, loss=%.6f, "
+            "accepted=%d, duration=%.4fs",
+            task, new_round, avg_loss, result.accepted_count, duration,
+        )
+    else:
+        logger.warning(
+            "Aggregation produced no weights: task=%s, round=%d", task, current_round
         )
 
-    actual_byz = sum(1 for c in clients if c.is_byzantine)
-    assert actual_byz == num_byz, (
-        f'Byzantine count mismatch: expected {num_byz}, got {actual_byz}'
-    )
-    logger.info(
-        'setup_clients — %d total (%d Byzantine, %d honest), attack=%s.',
-        len(clients), num_byz, len(clients) - num_byz,
-        at if num_byz > 0 else 'none',
-    )
-    return clients
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown lifecycle handler."""
+    global model_history, fl_buffer, aggregator
 
-def run_experiment(
-    name: str,
-    config: Config,
-    client_dataloaders: list,
-    test_dataloader,
-    aggregation_method: str,
-    byzantine_fraction: float,
-    attack_type: str = 'sign_flipping',
-) -> dict:
-    """
-    Run one complete FL experiment and return metrics.
+    logger.info("FedBuff server starting up...")
 
-    Creates a fresh config, model, SABD, anomaly detector, clients, and server
-    for each experiment so there is no state leakage between runs.
+    # Step 1: Load users
+    try:
+        load_users(settings.USERS_FILE)
+    except FileNotFoundError:
+        logger.warning(
+            "Users file not found: %s. Run scripts/create_users.py first.",
+            settings.USERS_FILE,
+        )
+    except Exception as e:
+        logger.error("Failed to load users: %s", e)
 
-    Parameters
-    ----------
-    name               : str   Human-readable experiment label.
-    config             : Config Base configuration (overridden by the method/fraction args).
-    client_dataloaders : list  Per-client DataLoaders (shared across experiments).
-    test_dataloader    :       Held-out test set.
-    aggregation_method : str   Aggregation strategy to use.
-    byzantine_fraction : float Fraction of Byzantine clients for this experiment.
-    attack_type        : str   Attack type to inject.
-
-    Returns
-    -------
-    dict with keys ``metrics``, ``staleness``, ``name``.
-    """
-    set_seeds(config.seed)
-
-    # Build a new Config with just the aggregation method overridden.
-    # Filter out init=False derived fields before passing to Config().
-    base_dict = {
-        k: v for k, v in config.to_dict().items()
-        if k not in _DERIVED_CONFIG_FIELDS
+    # Step 2: Instantiate ModelHistory with initial models
+    models = {
+        "femnist": get_model("femnist"),
+        "shakespeare": get_model("shakespeare"),
     }
-    exp_config = Config(**{**base_dict, 'aggregation_method': aggregation_method})
+    model_history = ModelHistory(models, settings.MODEL_CHECKPOINT_DIR)
 
-    model        = FLModel(exp_config.in_channels, exp_config.num_classes, exp_config.hidden_dim)
-    model_history = ModelHistoryBuffer(exp_config.model_history_size)
-    sabd         = SABDCorrector(exp_config.sabd_alpha, model_history)
-    anomaly      = AnomalyDetector(exp_config.anomaly_threshold, sabd)
-    clients      = setup_clients(exp_config, client_dataloaders, byzantine_fraction, attack_type)
-    server       = AsyncFLServer(model, exp_config, test_dataloader, model_history, anomaly)
+    # Step 3: Instantiate Aggregator
+    aggregator = Aggregator(settings.AGGREGATION_STRATEGY, settings)
 
-    all_staleness = []
-    logger.info('Starting experiment: %s', name)
+    # Step 4: Instantiate AsyncBuffer and start buffer watcher
+    fl_buffer = AsyncBuffer(
+        settings.BUFFER_SIZE_K, settings.SUPPORTED_TASKS, aggregation_callback
+    )
+    watcher_task = asyncio.create_task(fl_buffer.buffer_watcher())
 
-    for _round_num in tqdm(range(exp_config.num_rounds), desc=name, unit='round'):
-        metrics = server.run_round(clients)
-        if 'avg_staleness' in metrics:
-            all_staleness.append(metrics['avg_staleness'])
+    # Step 5: Create results/checkpoints directory
+    os.makedirs(settings.MODEL_CHECKPOINT_DIR, exist_ok=True)
+    os.makedirs(settings.RESULTS_DIR, exist_ok=True)
 
-    # Final evaluation at the end of training (regardless of eval cadence)
-    server.evaluate_and_log()
+    logger.info(
+        "FedBuff server ready: host=%s, port=%d, strategy=%s, buffer_k=%d",
+        settings.SERVER_HOST, settings.SERVER_PORT,
+        settings.AGGREGATION_STRATEGY, settings.BUFFER_SIZE_K,
+    )
+
+    yield
+
+    # Shutdown
+    watcher_task.cancel()
+    try:
+        await watcher_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("FedBuff server shutting down.")
+
+
+# Create FastAPI app
+app = FastAPI(
+    title="FedBuff — Buffered Async Federated Learning",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# --- WebSocket endpoint ---
+@app.websocket("/ws/fl")
+async def websocket_fl(
+    websocket: WebSocket,
+    token: str = Query(...),
+    task: str = Query(...),
+):
+    """WebSocket endpoint for FL clients."""
+    await websocket.accept()
+
+    if task not in settings.SUPPORTED_TASKS:
+        await websocket.close(code=1008, reason=f"Unsupported task: {task}")
+        return
+
+    await handle_websocket(websocket, token, task, fl_buffer, model_history, settings)
+
+
+# --- REST endpoints ---
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    tasks_info = {}
+    for task in settings.SUPPORTED_TASKS:
+        tasks_info[task] = {
+            "round": model_history.get_round(task) if model_history else 0,
+            "buffer_size": fl_buffer.size(task) if fl_buffer else 0,
+        }
 
     return {
-        'metrics':  server.get_metrics(),
-        'staleness': all_staleness,
-        'name':      name,
+        "status": "ok",
+        "tasks": tasks_info,
+        "connected_clients": len(connected_clients),
     }
 
 
-# ---------------------------------------------------------------------------
-# Experiment suite
-# ---------------------------------------------------------------------------
-
-def run_all_experiments(config: Config) -> None:
-    """
-    Run the 4-experiment comparison suite and save all plots and reports.
-
-    Experiments
-    -----------
-    E1: FedAvg   — 0 % Byzantine    (baseline)
-    E2: FedAvg   — 20 % Byzantine   (shows vulnerability)
-    E3: Trimmed Mean — 20 % Byzantine   (robust)
-    E4: Coord. Median — 20 % Byzantine  (robust)
-    """
-    client_dataloaders, test_dataloader, client_indices, train_ds = setup_data(config)
-
-    tracker = ExperimentTracker(config)
-    tracker.plot_data_distribution(
-        client_indices, train_ds, config.num_classes,
-        save_path=f'{config.output_dir}/data_distribution.png',
-    )
-
-    experiments = [
-        {
-            'name': 'E1: FedAvg — No Attack (Baseline)',
-            'aggregation': 'fedavg',
-            'byzantine_fraction': 0.0,
-        },
-        {
-            'name': 'E2: FedAvg — Byzantine Attack (Vulnerable)',
-            'aggregation': 'fedavg',
-            'byzantine_fraction': 0.2,
-        },
-        {
-            'name': 'E3: Trimmed Mean — Byzantine Attack (Robust)',
-            'aggregation': 'trimmed_mean',
-            'byzantine_fraction': 0.2,
-        },
-        {
-            'name': 'E4: Coord. Median — Byzantine Attack (Robust)',
-            'aggregation': 'coordinate_median',
-            'byzantine_fraction': 0.2,
-        },
-    ]
-
-    all_results  = {}
-    all_staleness = []
-
-    for exp in experiments:
-        result = run_experiment(
-            exp['name'], config,
-            client_dataloaders, test_dataloader,
-            exp['aggregation'], exp['byzantine_fraction'],
+@app.get("/model/latest")
+async def get_latest_model(task: str = Query(...)):
+    """Get the latest model weights for a specific task."""
+    if task not in settings.SUPPORTED_TASKS:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Unsupported task: {task}"},
         )
-        all_results[exp['name']] = {
-            'rounds':   result['metrics']['round'],
-            'accuracy': result['metrics']['accuracy'],
-        }
-        all_staleness.extend(result['staleness'])
-
-    # ── Plots and reports ────────────────────────────────────────────────
-    tracker.plot_convergence_comparison(all_results)
-    tracker.plot_staleness_distribution(all_staleness)
-    tracker.generate_summary_report(all_results)
-    tracker.save_round_metrics_csv(all_results)
-
-    # ── Console summary ──────────────────────────────────────────────────
-    print('\n' + '=' * 65)
-    print('FINAL RESULTS')
-    print('=' * 65)
-    print(f"{'Experiment':<45} {'Final Acc':>10} {'Best Acc':>10}")
-    print('-' * 65)
-    for name, data in all_results.items():
-        if data['accuracy']:
-            print(
-                f"{name:<45} "
-                f"{data['accuracy'][-1]:>9.1%} "
-                f"{max(data['accuracy']):>9.1%}"
-            )
-    print('=' * 65)
+    if not model_history:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Model history not initialized"},
+        )
+    return model_history.get_latest(task)
 
 
-# ---------------------------------------------------------------------------
-# Smoke test
-# ---------------------------------------------------------------------------
-
-def run_smoke_test() -> None:
-    """
-    Minimal 3-client, 2-round sanity check.
-
-    Verifies that all imports work, the full pipeline runs without error,
-    and the model achieves better than random accuracy after 2 rounds.
-
-    Raises
-    ------
-    AssertionError   If test accuracy ≤ 5 % (worse than random on MNIST).
-    """
-    logger.info('Running smoke test…')
-
-    config = Config(
-        num_clients=3,
-        num_rounds=2,
-        byzantine_fraction=0.0,
-        use_dp=False,
-        client_speed_variance=False,
-        eval_every_n_rounds=1,
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus scrape endpoint."""
+    return StreamingResponse(
+        iter([generate_latest()]),
+        media_type=CONTENT_TYPE_LATEST,
     )
 
-    client_dataloaders, test_dataloader, _, _ = setup_data(config)
 
-    model         = FLModel(config.in_channels, config.num_classes, config.hidden_dim)
-    model_history = ModelHistoryBuffer(config.model_history_size)
-    sabd          = SABDCorrector(config.sabd_alpha, model_history)
-    anomaly       = AnomalyDetector(config.anomaly_threshold, sabd)
-    clients       = setup_clients(config, client_dataloaders, 0.0)
-    server        = AsyncFLServer(model, config, test_dataloader, model_history, anomaly)
-
-    for _ in range(config.num_rounds):
-        server.run_round(clients)
-
-    acc, _ = server.evaluate_and_log()
-
-    assert acc > 0.05, (
-        f'Smoke test FAILED: accuracy {acc:.4f} ≤ 0.05 (worse than random)'
-    )
-    print(f'Smoke test PASSED.  Accuracy after {config.num_rounds} rounds: {acc:.4f}')
+@app.get("/admin/clients")
+async def admin_clients(payload: dict = Depends(require_role("server"))):
+    """List all connected clients. Requires server role."""
+    clients_list = []
+    for cid, info in connected_clients.items():
+        clients_list.append({
+            "client_id": cid,
+            "display_name": info["display_name"],
+            "role": info["role"],
+            "participant": info["participant"],
+            "task": info["task"],
+            "connected_at": info["connected_at"],
+        })
+    return {"clients": clients_list, "count": len(clients_list)}
 
 
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
+@app.get("/telemetry/stream")
+async def telemetry_stream():
+    """SSE endpoint — streams all events from evaluation/metrics.py."""
+    queue = await subscribe_sse()
 
-def parse_args():
-    """Parse command-line arguments."""
-    import argparse
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    event_data = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"data: {event_data}\n\n"
+                except asyncio.TimeoutError:
+                    # Send keepalive
+                    yield f": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await unsubscribe_sse(queue)
 
-    p = argparse.ArgumentParser(
-        description='Async Robust Federated Learning (ARFL) framework',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-
-    p.add_argument('--dataset',            default='MNIST',        choices=['MNIST', 'CIFAR10'])
-    p.add_argument('--num_clients',        type=int,  default=10)
-    p.add_argument('--num_rounds',         type=int,  default=50)
-    p.add_argument('--aggregation',        default='trimmed_mean')
-    p.add_argument('--byzantine_fraction', type=float, default=0.2)
-    p.add_argument('--alpha',              type=float, default=0.5,  help='Dirichlet alpha')
-    p.add_argument('--sabd_alpha',         type=float, default=0.5,  help='SABD correction strength')
-    p.add_argument('--no_dp',              action='store_true',      help='Disable differential privacy')
-    p.add_argument('--smoke_test',         action='store_true',      help='Run 3-client sanity check')
-    p.add_argument('--check',              action='store_true',      help='Verify imports only')
-    p.add_argument('--output_dir',         default='./results')
-    p.add_argument('--in_channels',        type=int,  default=1,    help='1=MNIST, 3=CIFAR10')
-
-    return p.parse_args()
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    """Parse arguments and dispatch to the requested mode."""
-    args = parse_args()
-
-    # ── --check: import verification ─────────────────────────────────────
-    if args.check:
-        from async_federated_learning.aggregation.aggregator import list_available_methods
-        print('All imports successful.')
-        print('Available aggregation methods:', list_available_methods())
-        return
-
-    # ── --smoke_test: fast 3-client sanity check ──────────────────────────
-    if args.smoke_test:
-        run_smoke_test()
-        return
-
-    # ── Full experiment suite ─────────────────────────────────────────────
-    config = Config(
-        dataset_name=args.dataset,
-        num_clients=args.num_clients,
-        num_rounds=args.num_rounds,
-        aggregation_method=args.aggregation,
-        byzantine_fraction=args.byzantine_fraction,
-        dirichlet_alpha=args.alpha,
-        sabd_alpha=args.sabd_alpha,
-        use_dp=not args.no_dp,
-        output_dir=args.output_dir,
-        in_channels=args.in_channels,
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
-    config.summary()
-    run_all_experiments(config)
 
+if __name__ == "__main__":
+    import uvicorn
 
-if __name__ == '__main__':
-    main()
+    uvicorn.run(
+        "main:app",
+        host=settings.SERVER_HOST,
+        port=settings.SERVER_PORT,
+        log_level=settings.LOG_LEVEL.lower(),
+        ws_ping_interval=20,
+        ws_ping_timeout=20,
+    )
