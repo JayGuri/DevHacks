@@ -43,12 +43,13 @@ export default function SignupForm() {
     setSubmitting(true);
     setError(null);
     try {
-      await signup(data.name, data.email, data.password, data.role);
-      toast.success("Account created — sign in with demo credentials");
+      await signup(data.name, data.email, data.password);
+      toast.success("Account created — please sign in");
       navigate("/login");
-    } catch {
-      setError("Something went wrong");
-      toast.error("Something went wrong");
+    } catch (err) {
+      const msg = err?.message || "Something went wrong";
+      setError(msg);
+      toast.error(msg);
     } finally {
       setSubmitting(false);
     }
@@ -57,7 +58,11 @@ export default function SignupForm() {
   return (
     <motion.div
       initial={{ y: 24, opacity: 0 }}
-      animate={error ? { x: [-10, 10, -10, 10, 0], y: 0, opacity: 1 } : { y: 0, opacity: 1 }}
+      animate={
+        error ?
+          { x: [-10, 10, -10, 10, 0], y: 0, opacity: 1 }
+        : { y: 0, opacity: 1 }
+      }
       transition={{ duration: 0.35, ease: "easeOut" }}
     >
       <Card className="w-full max-w-md">
@@ -175,14 +180,12 @@ export default function SignupForm() {
 
           <CardFooter className="flex flex-col gap-3">
             <Button type="submit" className="w-full" disabled={submitting}>
-              {submitting ? (
+              {submitting ?
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Creating…
                 </>
-              ) : (
-                "Create Account"
-              )}
+              : "Create Account"}
             </Button>
             <p className="text-sm text-muted-foreground">
               Already have an account?{" "}

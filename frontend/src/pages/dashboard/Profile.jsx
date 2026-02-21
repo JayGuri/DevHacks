@@ -26,8 +26,15 @@ import {
 } from "recharts";
 import { useAuth } from "@/contexts/AuthContext";
 import { useStore } from "@/lib/store";
-import { MOCK_PROJECTS } from "@/lib/mockData";
-import { getInitials, formatPercent, clampVal, randomBetween, cn } from "@/lib/utils";
+import { USE_MOCK } from "@/lib/config";
+import { getAllProjects } from "@/lib/projectUtils";
+import {
+  getInitials,
+  formatPercent,
+  clampVal,
+  randomBetween,
+  cn,
+} from "@/lib/utils";
 import { getUserProjectRole } from "@/lib/projectUtils";
 import AppLayout from "@/components/layout/AppLayout";
 import StatCard from "@/components/dashboard/StatCard";
@@ -58,11 +65,7 @@ function SortableHead({ label, sortKey, current, dir, onSort }) {
       >
         {label}
         {active &&
-          (dir === "asc" ? (
-            <ChevronUp size={12} />
-          ) : (
-            <ChevronDown size={12} />
-          ))}
+          (dir === "asc" ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
       </button>
     </TableHead>
   );
@@ -74,10 +77,14 @@ export default function Profile() {
   const store = useStore();
   const navigate = useNavigate();
 
+  const allProjects = getAllProjects(store);
   const joinedIds = store.userProjects[currentUser?.id] || [];
-  const joinedProjects = MOCK_PROJECTS.filter((p) =>
-    joinedIds.includes(p.id)
-  );
+  const joinedProjects =
+    USE_MOCK ?
+      allProjects.filter((p) => joinedIds.includes(p.id))
+    : allProjects.filter((p) =>
+        p.members?.some((m) => m.userId === currentUser?.id),
+      );
 
   // Inline name editing
   const [editing, setEditing] = useState(false);
@@ -99,10 +106,10 @@ export default function Profile() {
   // Build per-project rows
   const rows = useMemo(() => {
     return joinedProjects.map((p) => {
-      const member = p.members.find((m) => m.userId === currentUser?.id);
+      const member = p.members?.find((m) => m.userId === currentUser?.id);
       const nodes = store.nodesByProject[p.id] || [];
       const myNode = nodes.find((n) => n.displayId === member?.nodeId);
-      const numRounds = p.config.numRounds || 50;
+      const numRounds = p.config?.numRounds || 50;
       const rc = myNode?.roundsContributed || 0;
       const projRole = getUserProjectRole(currentUser?.id, p.id, store);
       return {
@@ -132,7 +139,7 @@ export default function Profile() {
   const totalRoundsAll = rows.reduce((s, r) => s + r.rounds, 0);
   const hasPowerUser = totalRoundsAll > 50;
   const hasPrivacyChampion = joinedProjects.some(
-    (p) => p.config.useDifferentialPrivacy
+    (p) => p.config.useDifferentialPrivacy,
   );
 
   // Trust history for detailed chart
@@ -141,23 +148,20 @@ export default function Profile() {
     return Array.from({ length: maxLen }, (_, i) => {
       const point = { round: i + 1 };
       joinedProjects.forEach((p, pi) => {
-        const member = p.members.find((m) => m.userId === currentUser?.id);
+        const member = p.members?.find((m) => m.userId === currentUser?.id);
         const nodes = store.nodesByProject[p.id] || [];
         const myNode = nodes.find((n) => n.displayId === member?.nodeId);
         point[p.id] = clampVal(
           (myNode?.trust || 0.8) + randomBetween(-0.06, 0.06),
           0.3,
-          1.0
+          1.0,
         );
       });
       return point;
     });
   }, [joinedProjects, currentUser, store.nodesByProject]);
 
-  const totalUpdates = rows.reduce(
-    (s, r) => s + r.rounds * 3,
-    0
-  );
+  const totalUpdates = rows.reduce((s, r) => s + r.rounds * 3, 0);
 
   const userActivity = store.activityLog
     .filter((a) => a.userId === currentUser?.id)
@@ -175,7 +179,7 @@ export default function Profile() {
           </Avatar>
           <div className="flex-1">
             <div className="flex items-center gap-2">
-              {editing ? (
+              {editing ?
                 <div className="flex items-center gap-2">
                   <Input
                     value={nameVal}
@@ -196,11 +200,8 @@ export default function Profile() {
                     Cancel
                   </Button>
                 </div>
-              ) : (
-                <>
-                  <h2 className="font-display text-2xl font-bold">
-                    {nameVal}
-                  </h2>
+              : <>
+                  <h2 className="font-display text-2xl font-bold">{nameVal}</h2>
                   <Button
                     size="icon"
                     variant="ghost"
@@ -210,7 +211,7 @@ export default function Profile() {
                     <Pencil size={14} />
                   </Button>
                 </>
-              )}
+              }
             </div>
             <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
               <Lock size={12} />
@@ -259,11 +260,11 @@ export default function Profile() {
         <StatCard
           label="Uptime"
           value={
-            rows.length > 0
-              ? formatPercent(
-                  rows.reduce((s, r) => s + r.uptime, 0) / rows.length
-                )
-              : "0%"
+            rows.length > 0 ?
+              formatPercent(
+                rows.reduce((s, r) => s + r.uptime, 0) / rows.length,
+              )
+            : "0%"
           }
           icon={Clock}
         />
@@ -321,11 +322,14 @@ export default function Profile() {
                   </Badge>
                 </TableCell>
                 <TableCell>
-                  <Badge variant="outline" className={cn(
-                    r.projectRole === "lead"
-                      ? "border-cyan-500 text-cyan-600 dark:text-cyan-400"
-                      : ""
-                  )}>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      r.projectRole === "lead" ?
+                        "border-cyan-500 text-cyan-600 dark:text-cyan-400"
+                      : "",
+                    )}
+                  >
                     {r.projectRole}
                   </Badge>
                 </TableCell>

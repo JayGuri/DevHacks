@@ -1,12 +1,28 @@
-import { useMemo } from "react";
+import { useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { FolderOpen, Zap, Shield, Target, FolderPlus, ArrowRight, Layers, Lock } from "lucide-react";
+import {
+  FolderOpen,
+  Zap,
+  Shield,
+  Target,
+  FolderPlus,
+  ArrowRight,
+  Layers,
+  Lock,
+} from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useAuth } from "@/contexts/AuthContext";
 import { useStore } from "@/lib/store";
-import { MOCK_PROJECTS } from "@/lib/mockData";
-import { getInitials, formatPercent, getTrustColor, getTrustBg } from "@/lib/utils";
+import { USE_MOCK } from "@/lib/config";
+import { apiListProjects } from "@/lib/api";
+import { getAllProjects } from "@/lib/projectUtils";
+import {
+  getInitials,
+  formatPercent,
+  getTrustColor,
+  getTrustBg,
+} from "@/lib/utils";
 import AppLayout from "@/components/layout/AppLayout";
 import StatCard from "@/components/dashboard/StatCard";
 import RoleBadge from "@/components/dashboard/RoleBadge";
@@ -17,7 +33,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from "@/components/ui/table";
 
 function ProjectCard({ project, userId, navigate }) {
@@ -69,27 +90,46 @@ function ProjectCard({ project, userId, navigate }) {
 
 export default function Overview() {
   const { currentUser } = useAuth();
-  const viewMode = useStore((s) => s.viewMode);
-  const userProjects = useStore((s) => s.userProjects);
-  const activityLog = useStore((s) => s.activityLog);
-  const roundsByProject = useStore((s) => s.roundsByProject);
+  const store = useStore();
+  const viewMode = store.viewMode;
+  const userProjects = store.userProjects;
+  const activityLog = store.activityLog;
+  const roundsByProject = store.roundsByProject;
   const navigate = useNavigate();
+  const setProjects = useStore((s) => s.setProjects);
 
-  const joinedIds = userProjects[currentUser?.id] || [];
-  const joinedProjects = MOCK_PROJECTS.filter((p) => joinedIds.includes(p.id));
+  // Fetch projects from API when not using mock
+  useEffect(() => {
+    if (!USE_MOCK) {
+      apiListProjects()
+        .then((data) => setProjects(data))
+        .catch((err) => console.error("Failed to fetch projects:", err));
+    }
+  }, [setProjects]);
 
-  const totalRounds = joinedIds.reduce((sum, pid) => {
-    const rounds = roundsByProject[pid] || [];
+  const allProjects = getAllProjects(store);
+
+  const joinedProjects =
+    USE_MOCK ?
+      allProjects.filter((p) =>
+        (userProjects[currentUser?.id] || []).includes(p.id),
+      )
+    : allProjects.filter((p) =>
+        p.members?.some((m) => m.userId === currentUser?.id),
+      );
+
+  const totalRounds = joinedProjects.reduce((sum, p) => {
+    const rounds = roundsByProject[p.id] || [];
     return sum + (rounds[rounds.length - 1]?.round || 0);
   }, 0);
 
-  const bestAccuracy = joinedIds.reduce((best, pid) => {
-    const rounds = roundsByProject[pid] || [];
+  const bestAccuracy = joinedProjects.reduce((best, p) => {
+    const rounds = roundsByProject[p.id] || [];
     const latest = rounds[rounds.length - 1];
     return Math.max(best, latest?.globalAccuracy || 0);
   }, 0);
 
-  const nodesByProject = useStore((s) => s.nodesByProject);
+  const nodesByProject = store.nodesByProject;
 
   const recentActivity = activityLog
     .filter((a) => a.userId === currentUser?.id)
@@ -97,16 +137,23 @@ export default function Overview() {
 
   // Compute real average trust across all user's nodes
   const avgTrust = useMemo(() => {
-    let sum = 0, count = 0;
-    joinedIds.forEach((pid) => {
-      const project = MOCK_PROJECTS.find((p) => p.id === pid);
-      const member = project?.members.find((m) => m.userId === currentUser?.id);
-      const nodes = nodesByProject[pid] || [];
+    let sum = 0,
+      count = 0;
+    joinedProjects.forEach((pid_or_p) => {
+      const pId = typeof pid_or_p === "string" ? pid_or_p : pid_or_p.id;
+      const project = allProjects.find((p) => p.id === pId) || pid_or_p;
+      const member = project?.members?.find(
+        (m) => m.userId === currentUser?.id,
+      );
+      const nodes = nodesByProject[pId] || [];
       const myNode = nodes.find((n) => n.displayId === member?.nodeId);
-      if (myNode) { sum += myNode.trust; count++; }
+      if (myNode) {
+        sum += myNode.trust;
+        count++;
+      }
     });
     return count > 0 ? sum / count : 0;
-  }, [joinedIds, nodesByProject, currentUser]);
+  }, [joinedProjects, nodesByProject, currentUser, allProjects]);
 
   // Detailed: per-project stats table
   const projectRows = useMemo(() => {
@@ -181,9 +228,12 @@ export default function Overview() {
           <StatCard
             label="Avg Epsilon"
             value={
-              projectRows.length > 0
-                ? (projectRows.reduce((s, r) => s + r.epsilon, 0) / projectRows.length).toFixed(2)
-                : "0"
+              projectRows.length > 0 ?
+                (
+                  projectRows.reduce((s, r) => s + r.epsilon, 0) /
+                  projectRows.length
+                ).toFixed(2)
+              : "0"
             }
             icon={Lock}
           />
@@ -197,12 +247,12 @@ export default function Overview() {
 
       {/* My Projects */}
       <h3 className="mb-3 font-display text-lg font-semibold">My Projects</h3>
-      {joinedProjects.length === 0 ? (
+      {joinedProjects.length === 0 ?
         <EmptyState
           icon={FolderPlus}
           message="No projects yet. Join a project to start contributing."
         />
-      ) : viewMode === "simple" ? (
+      : viewMode === "simple" ?
         <div className="mb-6 grid gap-4 md:grid-cols-2">
           {joinedProjects.map((p) => (
             <ProjectCard
@@ -213,8 +263,7 @@ export default function Overview() {
             />
           ))}
         </div>
-      ) : (
-        <div className="mb-6 overflow-x-auto rounded-md border border-border">
+      : <div className="mb-6 overflow-x-auto rounded-md border border-border">
           <Table>
             <TableHeader>
               <TableRow>
@@ -232,14 +281,30 @@ export default function Overview() {
               {projectRows.map((r) => (
                 <TableRow key={r.id}>
                   <TableCell className="font-medium">{r.name}</TableCell>
-                  <TableCell><Badge variant="outline" className="mono-data">{r.nodeId}</Badge></TableCell>
-                  <TableCell className={`mono-data ${getTrustColor(r.trust)}`}>{formatPercent(r.trust * 100)}</TableCell>
-                  <TableCell className="mono-data">{formatPercent(r.accuracy)}</TableCell>
-                  <TableCell className="mono-data">{r.rounds}</TableCell>
-                  <TableCell className="mono-data">{r.epsilon.toFixed(2)}</TableCell>
-                  <TableCell><Badge variant="outline">{r.status}</Badge></TableCell>
                   <TableCell>
-                    <Button size="sm" variant="outline" onClick={() => navigate(`/dashboard/projects/${r.id}`)}>
+                    <Badge variant="outline" className="mono-data">
+                      {r.nodeId}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className={`mono-data ${getTrustColor(r.trust)}`}>
+                    {formatPercent(r.trust * 100)}
+                  </TableCell>
+                  <TableCell className="mono-data">
+                    {formatPercent(r.accuracy)}
+                  </TableCell>
+                  <TableCell className="mono-data">{r.rounds}</TableCell>
+                  <TableCell className="mono-data">
+                    {r.epsilon.toFixed(2)}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline">{r.status}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => navigate(`/dashboard/projects/${r.id}`)}
+                    >
                       View <ArrowRight size={14} className="ml-1" />
                     </Button>
                   </TableCell>
@@ -248,7 +313,7 @@ export default function Overview() {
             </TableBody>
           </Table>
         </div>
-      )}
+      }
 
       {/* Detailed: recent activity */}
       {viewMode === "detailed" && (
@@ -256,7 +321,7 @@ export default function Overview() {
           <h3 className="mb-3 font-display text-lg font-semibold">
             Recent Activity
           </h3>
-          {recentActivity.length > 0 ? (
+          {recentActivity.length > 0 ?
             <div className="space-y-2">
               {recentActivity.map((a, i) => (
                 <motion.div
@@ -278,9 +343,11 @@ export default function Overview() {
                 </motion.div>
               ))}
             </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No recent activity yet. Join or interact with a project to see events here.</p>
-          )}
+          : <p className="text-sm text-muted-foreground">
+              No recent activity yet. Join or interact with a project to see
+              events here.
+            </p>
+          }
         </div>
       )}
     </AppLayout>
