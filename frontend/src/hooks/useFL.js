@@ -36,6 +36,7 @@ export default function useFL(projectId) {
   const pushActivity = useStore((s) => s.pushActivity);
   const storeBlockNode = useStore((s) => s.blockNode);
   const storeUnblockNode = useStore((s) => s.unblockNode);
+  const pushNotification = useStore((s) => s.pushNotification);
 
   const nodes = nodesByProject[projectId] || [];
   const allRounds = roundsByProject[projectId] || [];
@@ -136,6 +137,13 @@ export default function useFL(projectId) {
 
       // Auto-flag nodes drifting beyond cosine threshold
       if (patch.cosineDistance > 0.45 && !node.isBlocked) {
+        if (node.status !== "BYZANTINE") {
+          useStore.getState().pushNotification({
+            type: "alert",
+            message: `Node ${node.displayId} flagged as Byzantine in ${project?.name || projectId}`,
+            projectId,
+          });
+        }
         patch.status = "BYZANTINE";
       }
 
@@ -191,9 +199,14 @@ export default function useFL(projectId) {
         projectId,
         timestamp: new Date().toISOString(),
       });
+      pushNotification({
+        type: "node_blocked",
+        message: `Node ${displayId} was blocked in ${project?.name || projectId}`,
+        projectId,
+      });
       toast.success(`${displayId} blocked`);
     },
-    [projectId, storeBlockNode, pushActivity]
+    [projectId, storeBlockNode, pushActivity, pushNotification, project?.name]
   );
 
   const unblockNode = useCallback(

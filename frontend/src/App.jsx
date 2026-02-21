@@ -12,6 +12,7 @@ import AdminOverview from "@/pages/admin/AdminOverview";
 import AdminProjects from "@/pages/admin/AdminProjects";
 import AdminProjectDetail from "@/pages/admin/AdminProjectDetail";
 import AdminUsers from "@/pages/admin/AdminUsers";
+import JoinRequests from "@/pages/admin/JoinRequests";
 import ProtectedRoute from "@/components/auth/ProtectedRoute";
 
 function AnimatedPage({ children }) {
@@ -102,6 +103,14 @@ export default function App() {
           element={
             <ProtectedRoute requiredRole="TEAM_LEAD">
               <AnimatedPage><AdminUsers /></AnimatedPage>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/requests"
+          element={
+            <ProtectedRoute requiredRole="TEAM_LEAD">
+              <AnimatedPage><JoinRequests /></AnimatedPage>
             </ProtectedRoute>
           }
         />

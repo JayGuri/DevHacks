@@ -203,4 +203,10 @@ export const useStore = create((set) => ({
         p.id === id ? { ...p, isActive: false } : p
       ),
     })),
+  updateExtraProject: (id, patch) =>
+    set((s) => ({
+      extraProjects: s.extraProjects.map((p) =>
+        p.id === id ? { ...p, ...patch } : p
+      ),
+    })),
 }));

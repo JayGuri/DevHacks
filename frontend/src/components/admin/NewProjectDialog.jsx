@@ -42,10 +42,10 @@ const ROUND_OPTIONS = [50, 100, 150];
 export default function NewProjectDialog({ open, onOpenChange, onSubmit }) {
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm({
     defaultValues: {
-      name: "", description: "", numClients: 10, byzantineFraction: 0.2,
-      attackType: "sign_flipping", aggregationMethod: "trimmed_mean",
-      dirichletAlpha: 0.5, numRounds: 50, useDifferentialPrivacy: true,
-      dpNoiseMultiplier: 0.1, sabdAlpha: 0.5,
+      name: "", description: "", visibility: "public", numClients: 10,
+      byzantineFraction: 0.2, attackType: "sign_flipping",
+      aggregationMethod: "trimmed_mean", dirichletAlpha: 0.5, numRounds: 50,
+      useDifferentialPrivacy: true, dpNoiseMultiplier: 0.1, sabdAlpha: 0.5,
     },
   });
 
@@ -70,6 +70,16 @@ export default function NewProjectDialog({ open, onOpenChange, onSubmit }) {
               <div>
                 <Label>Description</Label>
                 <Input {...register("description")} placeholder="Optional description" />
+              </div>
+              <div>
+                <Label>Visibility</Label>
+                <Select value={vals.visibility} onValueChange={(v) => setValue("visibility", v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="public">Public — anyone can request to join</SelectItem>
+                    <SelectItem value="private">Private — invite code required</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div>
                 <Label>Clients: {vals.numClients}</Label>
@@ -140,6 +150,7 @@ export default function NewProjectDialog({ open, onOpenChange, onSubmit }) {
             <Card className="h-fit">
               <CardContent className="space-y-2 p-3 text-xs">
                 <p className="metric-label text-muted-foreground">Preview</p>
+                <p>{vals.visibility === "private" ? "🔒 Private" : "🌐 Public"}</p>
                 <p>{vals.numClients} clients · {numByz} adversarial</p>
                 <p>{vals.attackType.replace(/_/g, " ")}</p>
                 <p>{vals.aggregationMethod.replace(/_/g, " ")}</p>

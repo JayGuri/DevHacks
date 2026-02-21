@@ -27,7 +27,8 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { useStore } from "@/lib/store";
 import { MOCK_PROJECTS } from "@/lib/mockData";
-import { getInitials, formatPercent, clampVal, randomBetween } from "@/lib/utils";
+import { getInitials, formatPercent, clampVal, randomBetween, cn } from "@/lib/utils";
+import { getUserProjectRole } from "@/lib/projectUtils";
 import AppLayout from "@/components/layout/AppLayout";
 import StatCard from "@/components/dashboard/StatCard";
 import RoleBadge from "@/components/dashboard/RoleBadge";
@@ -103,17 +104,19 @@ export default function Profile() {
       const myNode = nodes.find((n) => n.displayId === member?.nodeId);
       const numRounds = p.config.numRounds || 50;
       const rc = myNode?.roundsContributed || 0;
+      const projRole = getUserProjectRole(currentUser?.id, p.id, store);
       return {
         projectId: p.id,
         project: p.name,
         nodeId: member?.nodeId || "—",
+        projectRole: projRole || member?.role || "contributor",
         rounds: rc,
         trust: myNode?.trust ?? 0,
         uptime: myNode ? Math.min(100, (rc / numRounds) * 100) : 0,
         status: myNode?.status || "—",
       };
     });
-  }, [joinedProjects, currentUser, store.nodesByProject]);
+  }, [joinedProjects, currentUser, store.nodesByProject, store.projectRoles]);
 
   const sorted = useMemo(() => {
     return [...rows].sort((a, b) => {
@@ -282,6 +285,7 @@ export default function Profile() {
                 onSort={handleSort}
               />
               <TableHead>Node</TableHead>
+              <TableHead>Project Role</TableHead>
               <SortableHead
                 label="Rounds"
                 sortKey="rounds"
@@ -314,6 +318,15 @@ export default function Profile() {
                 <TableCell>
                   <Badge variant="outline" className="mono-data">
                     {r.nodeId}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline" className={cn(
+                    r.projectRole === "lead"
+                      ? "border-cyan-500 text-cyan-600 dark:text-cyan-400"
+                      : ""
+                  )}>
+                    {r.projectRole}
                   </Badge>
                 </TableCell>
                 <TableCell className="mono-data">{r.rounds}</TableCell>

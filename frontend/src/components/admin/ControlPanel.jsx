@@ -11,6 +11,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import ConfirmDialog from "@/components/dashboard/ConfirmDialog";
 import { useStore } from "@/lib/store";
+import { MOCK_PROJECTS } from "@/lib/mockData";
 
 const AGGREGATORS = [
   { value: "trimmed_mean", desc: "Drop top/bottom k gradients" },
@@ -23,6 +24,9 @@ const AGGREGATORS = [
 export default function ControlPanel({ fl, projectId }) {
   const methodByProject = useStore((s) => s.methodByProject);
   const roundsByProject = useStore((s) => s.roundsByProject);
+  const pushNotification = useStore((s) => s.pushNotification);
+
+  const projectName = MOCK_PROJECTS.find((p) => p.id === projectId)?.name || projectId;
 
   const currentMethod =
     methodByProject[projectId] || fl.project?.config?.aggregationMethod || "trimmed_mean";
@@ -66,6 +70,11 @@ export default function ControlPanel({ fl, projectId }) {
             value={currentMethod}
             onValueChange={(v) => {
               fl.setAggregationMethod(v);
+              pushNotification({
+                type: "config",
+                message: `Aggregation method changed to ${v.replace(/_/g, " ")} in ${projectName}`,
+                projectId,
+              });
               toast.info(`Aggregation → ${v.replace(/_/g, " ")}`);
             }}
           >

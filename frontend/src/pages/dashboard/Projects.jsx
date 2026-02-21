@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { FolderOpen, Users, KeyRound, Globe, LockKeyhole } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { FolderOpen, Users, KeyRound, Globe, LockKeyhole, ClipboardList } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useStore } from "@/lib/store";
 import { formatPercent, getTrustColor, validateInviteCode } from "@/lib/utils";
@@ -41,6 +42,8 @@ export default function Projects() {
   const allProjects = getAllProjects(store);
   const joined = allProjects.filter((p) => joinedIds.includes(p.id));
   const available = getAvailableToJoin(currentUser?.id, store);
+
+  const myRequests = store.joinRequests.filter((r) => r.userId === currentUser?.id);
 
   // Request-to-join dialog state
   const [requestTarget, setRequestTarget] = useState(null);
@@ -140,6 +143,7 @@ export default function Projects() {
         <TabsList className="mb-4">
           <TabsTrigger value="joined">Joined ({joined.length})</TabsTrigger>
           <TabsTrigger value="available">Available ({available.length})</TabsTrigger>
+          <TabsTrigger value="requests">My Requests ({myRequests.length})</TabsTrigger>
         </TabsList>
 
         {/* ── Joined ──────────────────────────── */}
@@ -230,6 +234,68 @@ export default function Projects() {
                   </Card>
                 );
               })}
+            </div>
+          )}
+        </TabsContent>
+
+        {/* ── My Requests ─────────────────────── */}
+        <TabsContent value="requests">
+          {myRequests.length === 0 ? (
+            <EmptyState icon={ClipboardList} title="No requests" description="You haven't requested to join any projects yet." />
+          ) : (
+            <div className="overflow-x-auto rounded-md border border-border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Project</TableHead>
+                    <TableHead>Visibility</TableHead>
+                    <TableHead>Requested</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Message</TableHead>
+                    <TableHead>Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {myRequests.map((req) => {
+                    const project = allProjects.find((p) => p.id === req.projectId);
+                    const statusColors = {
+                      pending: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+                      approved: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+                      rejected: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
+                    };
+                    return (
+                      <TableRow key={req.id}>
+                        <TableCell className="font-medium">{project?.name || req.projectId}</TableCell>
+                        <TableCell>
+                          {project?.visibility === "private" ? (
+                            <Badge variant="outline" className="text-muted-foreground"><LockKeyhole size={10} className="mr-1" /> Private</Badge>
+                          ) : (
+                            <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"><Globe size={10} className="mr-1" /> Public</Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {formatDistanceToNow(new Date(req.requestedAt), { addSuffix: true })}
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={statusColors[req.status] || ""}>
+                            {req.status.charAt(0).toUpperCase() + req.status.slice(1)}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="max-w-[200px] truncate text-xs text-muted-foreground">
+                          {req.message || "—"}
+                        </TableCell>
+                        <TableCell>
+                          {req.status === "approved" && (
+                            <Button size="sm" variant="outline" onClick={() => navigate(`/dashboard/projects/${req.projectId}`)}>
+                              View Project
+                            </Button>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
             </div>
           )}
         </TabsContent>
