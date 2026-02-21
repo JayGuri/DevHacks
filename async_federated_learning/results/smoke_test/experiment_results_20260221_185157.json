@@ -1,0 +1,47 @@
+{
+  "Smoke_Test": {
+    "name": "Smoke_Test",
+    "config": {
+      "modality": "image",
+      "model": "cnn",
+      "num_clients": 3,
+      "num_rounds": 2,
+      "async_mode": false,
+      "use_gatekeeper": false,
+      "aggregation_method": "fedavg",
+      "byzantine_fraction": 0
+    },
+    "metrics": {
+      "total_time": 222.01985573768616,
+      "avg_round_time": 111.00992786884308,
+      "final_accuracy": 9.32,
+      "final_loss": 2.3063709739685057,
+      "total_processed": 6,
+      "total_gatekeeper_rejected": 0,
+      "total_sabd_rejected": 0,
+      "avg_staleness": 0.0
+    },
+    "round_metrics": [
+      {
+        "round": 1,
+        "processed": 3,
+        "discarded_sabd": 0,
+        "gatekeeper_rejected": 0,
+        "avg_staleness": 0.0,
+        "mode": "sync",
+        "accuracy": 0.0938,
+        "loss": 2.306204476928711
+      },
+      {
+        "round": 2,
+        "processed": 3,
+        "discarded_sabd": 0,
+        "gatekeeper_rejected": 0,
+        "avg_staleness": 0.0,
+        "mode": "sync",
+        "accuracy": 0.0932,
+        "loss": 2.3063709739685057
+      }
+    ]
+  }
+}

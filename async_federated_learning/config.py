@@ -63,8 +63,18 @@ class Config:
     # ------------------------------------------------------------------
     # Model
     # ------------------------------------------------------------------
+    modality: str = "image"  # "image" or "text"
     in_channels: int = 1
     hidden_dim: int = 128
+    
+    # Text-specific model parameters (for Shakespeare)
+    text_model_type: str = "lstm"  # "lstm" or "rnn"
+    vocab_size: int = 80  # Will be set dynamically from data
+    embedding_dim: int = 128
+    text_hidden_dim: int = 256
+    text_num_layers: int = 2
+    text_dropout: float = 0.3
+    seq_length: int = 80
 
     # ------------------------------------------------------------------
     # Local training
@@ -95,6 +105,14 @@ class Config:
     sabd_alpha: float = 0.5
     model_history_size: int = 15
     anomaly_threshold: float = 2.5
+    
+    # ------------------------------------------------------------------
+    # Gatekeeper (L2 Norm Filter Funnel)
+    # ------------------------------------------------------------------
+    use_gatekeeper: bool = True
+    gatekeeper_l2_factor: float = 3.0  # Std deviation multiplier
+    gatekeeper_min_threshold: float = 0.01
+    gatekeeper_max_threshold: float = 1000.0
 
     # ------------------------------------------------------------------
     # Differential Privacy
@@ -190,8 +208,11 @@ class Config:
                 ("num_honest_clients", self.num_honest_clients),
             ],
             "Model": [
+                ("modality", self.modality),
                 ("in_channels", self.in_channels),
                 ("hidden_dim", self.hidden_dim),
+                ("text_model_type", self.text_model_type if self.modality == "text" else "N/A"),
+                ("vocab_size", self.vocab_size if self.modality == "text" else "N/A"),
             ],
             "Local Training": [
                 ("num_rounds", self.num_rounds),
@@ -214,6 +235,11 @@ class Config:
                 ("sabd_alpha", self.sabd_alpha),
                 ("model_history_size", self.model_history_size),
                 ("anomaly_threshold", self.anomaly_threshold),
+            ],
+            "Gatekeeper": [
+                ("use_gatekeeper", self.use_gatekeeper),
+                ("gatekeeper_l2_factor", self.gatekeeper_l2_factor),
+                ("gatekeeper_max_threshold", self.gatekeeper_max_threshold),
             ],
             "Differential Privacy": [
                 ("use_dp", self.use_dp),

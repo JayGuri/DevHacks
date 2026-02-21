@@ -57,6 +57,7 @@ from async_federated_learning.aggregation.aggregator import get_aggregator
 from async_federated_learning.client.fl_client import ClientUpdate
 from async_federated_learning.config import Config
 from async_federated_learning.detection.anomaly import AnomalyDetector
+from async_federated_learning.detection.gatekeeper import Gatekeeper
 from async_federated_learning.models.cnn import FLModel, evaluate_model
 from async_federated_learning.server.model_history import ModelHistoryBuffer
 
@@ -93,17 +94,37 @@ class AsyncFLServer:
         test_dataloader,
         model_history: ModelHistoryBuffer,
         anomaly_detector: AnomalyDetector,
+        gatekeeper: Gatekeeper = None,
     ):
         self.model = model
         self.config = config
         self.test_dataloader = test_dataloader
         self.model_history = model_history
         self.anomaly_detector = anomaly_detector
+        
+        # Initialize gatekeeper if enabled
+        if config.use_gatekeeper:
+            self.gatekeeper = gatekeeper or Gatekeeper(
+                l2_threshold_factor=config.gatekeeper_l2_factor,
+                min_l2_threshold=config.gatekeeper_min_threshold,
+                max_l2_threshold=config.gatekeeper_max_threshold,
+            )
+            logger.info("Gatekeeper enabled for pre-aggregation filtering.")
+        else:
+            self.gatekeeper = None
+            logger.info("Gatekeeper disabled.")
+        
         self.aggregation_fn = get_aggregator(config.aggregation_method, config)
 
         self.global_round: int = 0
         self.update_queue: queue.Queue = queue.Queue()
         self._model_lock = threading.Lock()
+        
+        # Async aggregation trigger
+        self.min_updates_for_aggregation = max(1, int(config.num_clients * 0.5))  # 50% quorum
+        self.aggregation_event = threading.Event()
+        self.aggregation_thread = None
+        self.async_mode = config.client_speed_variance  # Use async mode when speed varies
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -116,11 +137,12 @@ class AsyncFLServer:
             "num_discarded": [],
             "avg_staleness": [],
             "byzantine_detected": [],
+            "gatekeeper_rejections": [],
         }
 
         logger.info(
-            "AsyncFLServer initialised — aggregation=%s, device=%s.",
-            config.aggregation_method, self.device,
+            "AsyncFLServer initialised — aggregation=%s, device=%s, async_mode=%s.",
+            config.aggregation_method, self.device, self.async_mode,
         )
 
     # ------------------------------------------------------------------
@@ -142,15 +164,26 @@ class AsyncFLServer:
 
     def receive_update(self, update: ClientUpdate) -> None:
         """
-        Enqueue a client update for processing at the next aggregation step.
+        Enqueue a client update for processing.
+        
+        In async mode: triggers immediate aggregation when enough updates arrive.
+        In sync mode: waits for all clients (traditional FL).
 
         Non-blocking (``put_nowait``).  Called from client threads.
         """
         self.update_queue.put_nowait(update)
         logger.debug(
-            "Queued update from client %d (round %d).",
-            update.client_id, update.round_number,
+            "Queued update from client %d (round %d). Queue size: %d",
+            update.client_id, update.round_number, self.update_queue.qsize(),
         )
+        
+        # In async mode, check if we have enough updates to aggregate
+        if self.async_mode and self.update_queue.qsize() >= self.min_updates_for_aggregation:
+            logger.info(
+                "Async trigger: %d updates queued (>= %d threshold). Processing immediately.",
+                self.update_queue.qsize(), self.min_updates_for_aggregation,
+            )
+            self.aggregation_event.set()  # Signal aggregation thread
 
     # ------------------------------------------------------------------
     # Staleness helpers
@@ -192,24 +225,25 @@ class AsyncFLServer:
 
     def aggregate_pending_updates(self) -> tuple:
         """
-        Drain the update queue, filter, score, and aggregate.
+        Drain the update queue, filter with Gatekeeper + SABD, and aggregate.
 
         Steps
         -----
         1. Drain all items currently in the queue into ``pending``.
-        2. For each update:
+        2. [NEW] GATEKEEPER: L2 norm filtering (if enabled).
+        3. For each update:
            a. Compute staleness; discard if > ``config.max_staleness``.
-           b. Score with ``AnomalyDetector``; discard if Byzantine.
+           b. Score with ``AnomalyDetector`` (SABD); discard if Byzantine.
            c. Otherwise add to ``valid`` list with its staleness.
-        3. GUARD: if ``valid`` is empty, skip aggregation and return zeros.
-        4. Compute combined weight = staleness_weight × num_samples, normalise.
-        5. Call ``aggregation_fn`` on the surviving deltas.
-        6. Apply the aggregated delta to the global model.
+        4. GUARD: if ``valid`` is empty, skip aggregation and return zeros.
+        5. Compute combined weight = staleness_weight × num_samples, normalise.
+        6. Call ``aggregation_fn`` on the surviving deltas.
+        7. Apply the aggregated delta to the global model.
 
         Returns
         -------
-        tuple[int, int, float]
-            ``(num_processed, num_discarded, avg_staleness)``
+        tuple[int, int, int, float]
+            ``(num_processed, num_discarded_staleness, num_discarded_gatekeeper, avg_staleness)``
         """
         # ── Step 1: drain queue ─────────────────────────────────────────
         pending = []
@@ -221,7 +255,42 @@ class AsyncFLServer:
 
         if not pending:
             logger.warning("aggregate_pending_updates — queue was empty.")
-            return (0, 0, 0.0)
+            return (0, 0, 0, 0.0)
+
+        logger.info(f"Processing {len(pending)} pending updates...")
+
+        # ── Step 2: GATEKEEPER L2 norm filtering ────────────────────────
+        gatekeeper_rejections = 0
+        if self.gatekeeper:
+            # Prepare updates in format gatekeeper expects
+            gatekeeper_updates = [
+                {
+                    'client_id': u.client_id,
+                    'model_update': u.weight_delta,
+                    'round': u.round_number,
+                }
+                for u in pending
+            ]
+            
+            # Filter through gatekeeper
+            accepted_gk, rejected_gk, gk_stats = self.gatekeeper.inspect_updates(
+                gatekeeper_updates, self.global_round
+            )
+            
+            gatekeeper_rejections = len(rejected_gk)
+            
+            # Keep only accepted updates
+            accepted_ids = {u['client_id'] for u in accepted_gk}
+            pending = [u for u in pending if u.client_id in accepted_ids]
+            
+            logger.info(
+                f"Gatekeeper: {len(accepted_gk)} accepted, {gatekeeper_rejections} rejected. "
+                f"L2 bounds: [{gk_stats['lower_bound']:.2f}, {gk_stats['upper_bound']:.2f}]"
+            )
+        
+        if not pending:
+            logger.warning("All updates rejected by Gatekeeper!")
+            return (0, 0, gatekeeper_rejections, 0.0)
 
         # Get current weights once (used by AnomalyDetector / SABD)
         current_weights = self.get_global_weights()
@@ -230,7 +299,7 @@ class AsyncFLServer:
         discarded = 0
         staleness_vals = []
 
-        # ── Steps 2a-2c: filter ─────────────────────────────────────────
+        # ── Steps 3a-3c: SABD filtering ─────────────────────────────────
         for update in pending:
             staleness = self.compute_staleness(update)
             update.staleness = staleness
@@ -255,15 +324,15 @@ class AsyncFLServer:
             valid.append((update, staleness))
             staleness_vals.append(staleness)
 
-        # ── Step 3: guard ───────────────────────────────────────────────
+        # ── Step 4: guard ───────────────────────────────────────────────
         if not valid:
             logger.warning(
-                "No valid updates this round. Skipping aggregation "
-                "(%d discarded).", discarded,
+                "No valid updates after filtering. "
+                f"(staleness/SABD discarded={discarded}, gatekeeper rejected={gatekeeper_rejections})"
             )
-            return (0, discarded, 0.0)
+            return (0, discarded, gatekeeper_rejections, 0.0)
 
-        # ── Step 4: combined weights ─────────────────────────────────────
+        # ── Step 5: combined weights ─────────────────────────────────────
         # w_i = w_staleness(d_i) · num_samples_i
         raw_weights = [
             self.staleness_weight(s) * u.num_samples
@@ -272,19 +341,20 @@ class AsyncFLServer:
         total = sum(raw_weights)
         norm_weights = [w / total for w in raw_weights]
 
-        # ── Step 5: aggregate ───────────────────────────────────────────
+        # ── Step 6: aggregate ───────────────────────────────────────────
         deltas = [u.weight_delta for u, _ in valid]
         aggregated_delta = self.aggregation_fn(deltas, weights=norm_weights)
 
-        # ── Step 6: apply ───────────────────────────────────────────────
+        # ── Step 7: apply ───────────────────────────────────────────────
         self._apply_delta(aggregated_delta)
 
         avg_stale = float(np.mean(staleness_vals)) if staleness_vals else 0.0
         logger.info(
-            "Round %d aggregation — processed=%d, discarded=%d, avg_staleness=%.2f.",
-            self.global_round, len(valid), discarded, avg_stale,
+            "Round %d aggregation — processed=%d, SABD/staleness discarded=%d, "
+            "gatekeeper rejected=%d, avg_staleness=%.2f.",
+            self.global_round, len(valid), discarded, gatekeeper_rejections, avg_stale,
         )
-        return (len(valid), discarded, avg_stale)
+        return (len(valid), discarded, gatekeeper_rejections, avg_stale)
 
     def _apply_delta(self, aggregated_delta: dict) -> None:
         """
@@ -321,16 +391,16 @@ class AsyncFLServer:
 
     def run_round(self, clients: list) -> dict:
         """
-        Execute one complete global round.
+        Execute one complete global round with async update processing.
 
         Sequence
         --------
         1. Increment ``global_round``.
         2. Broadcast current global weights to every client.
         3. Spawn one thread per client (delay + train + enqueue).
-        4. Join all threads.
-        5. Aggregate pending updates.
-        6. Evaluate every ``eval_every_n_rounds`` rounds.
+        4. If async_mode: aggregate as updates arrive (50% quorum).
+           If sync_mode: wait for all clients, then aggregate once.
+        5. Evaluate every ``eval_every_n_rounds`` rounds.
 
         Parameters
         ----------
@@ -341,14 +411,14 @@ class AsyncFLServer:
         dict   Per-round metrics snapshot.
         """
         self.global_round += 1
-        logger.info("=== Starting round %d ===", self.global_round)
+        logger.info("=== Starting round %d (async_mode=%s) ===", self.global_round, self.async_mode)
 
         # ── Step 2: broadcast ───────────────────────────────────────────
         global_weights = self.get_global_weights()
         for client in clients:
             client.receive_global_model(global_weights, self.global_round)
 
-        # ── Steps 3–4: parallel client execution ─────────────────────────
+        # ── Steps 3: parallel client execution ──────────────────────────
         threads = []
 
         def client_task(c):
@@ -366,25 +436,58 @@ class AsyncFLServer:
             threads.append(t)
             t.start()
 
-        for t in threads:
-            t.join()
-
-        # ── Step 5: aggregate ───────────────────────────────────────────
-        processed, discarded, avg_stale = self.aggregate_pending_updates()
+        # ── Step 4: Async vs Sync aggregation ───────────────────────────
+        if self.async_mode:
+            # ASYNC MODE: Aggregate as soon as enough updates arrive
+            # Don't wait for all clients - some may be slow stragglers
+            logger.info("Async mode: aggregating as updates arrive (not waiting for stragglers)")
+            
+            # Wait for minimum quorum OR all clients
+            timeout = 30  # seconds
+            start_time = threading.current_thread()
+            
+            # Check periodically if we have enough updates
+            import time
+            elapsed = 0
+            while elapsed < timeout:
+                if self.update_queue.qsize() >= self.min_updates_for_aggregation:
+                    logger.info(f"Quorum reached: {self.update_queue.qsize()}/{len(clients)} clients responded")
+                    break
+                time.sleep(0.5)
+                elapsed += 0.5
+            
+            # Don't wait for stragglers - aggregate what we have
+            processed, discarded_sabd, gatekeeper_rejected, avg_stale = self.aggregate_pending_updates()
+            
+            # Join remaining threads (non-blocking check)
+            for t in threads:
+                t.join(timeout=0.1)  # Don't block
+                
+        else:
+            # SYNC MODE: Traditional FL - wait for ALL clients
+            logger.info("Sync mode: waiting for all clients...")
+            for t in threads:
+                t.join()
+            
+            # Aggregate after all clients finish
+            processed, discarded_sabd, gatekeeper_rejected, avg_stale = self.aggregate_pending_updates()
 
         # Update metrics history
         self.metrics_history["num_processed"].append(processed)
-        self.metrics_history["num_discarded"].append(discarded)
+        self.metrics_history["num_discarded"].append(discarded_sabd)
+        self.metrics_history["gatekeeper_rejections"].append(gatekeeper_rejected)
         self.metrics_history["avg_staleness"].append(avg_stale)
 
         round_metrics: dict = {
             "round": self.global_round,
             "processed": processed,
-            "discarded": discarded,
+            "discarded_sabd": discarded_sabd,
+            "gatekeeper_rejected": gatekeeper_rejected,
             "avg_staleness": avg_stale,
+            "mode": "async" if self.async_mode else "sync",
         }
 
-        # ── Step 6: evaluation ──────────────────────────────────────────
+        # ── Step 5: evaluation ──────────────────────────────────────────
         if self.global_round % self.config.eval_every_n_rounds == 0:
             acc, loss = self.evaluate_and_log()
             round_metrics["accuracy"] = acc
