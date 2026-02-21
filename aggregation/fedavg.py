@@ -1,50 +1,51 @@
-# aggregation/fedavg.py — FedAvg weighted averaging (baseline strategy)
-import numpy as np
+# aggregation/fedavg.py — Federated Averaging (not Byzantine-robust)
+"""
+aggregation/fedavg.py
+=====================
+Sample-weighted averaging of client model updates (FedAvg).
+NOT Byzantine-robust — serves as baseline and fallback.
+
+Reference: McMahan et al., "Communication-Efficient Learning of Deep Networks
+from Decentralized Data", AISTATS 2017.
+"""
+
 import logging
-from aggregation.reputation import compute_combined_weights
 
-logger = logging.getLogger("fedbuff.aggregation.fedavg")
+logger = logging.getLogger(__name__)
 
 
-def fedavg(
-    updates: list,
-    current_round: int,
-    alpha: float,
-    max_staleness: int,
-) -> dict:
-    """
-    Baseline federated averaging strategy.
-    Computes a sample-count and staleness weighted average of all accepted updates.
-    No Byzantine defense is applied here; this is the honest baseline.
+def fedavg(updates: list, weights: list = None) -> dict:
+    """Compute the weighted average of client model updates.
 
-    updates: list of dicts, each with keys:
-      "client_id", "weights" (dict of numpy arrays), "num_samples", "global_round_received"
+    Parameters
+    ----------
+    updates : list[dict[str, np.ndarray]] — per-client weight deltas
+    weights : list[float] | None — importance weights (normalised internally)
 
-    Returns: dict of parameter_name -> numpy array (the aggregated global weight diff).
+    Returns
+    -------
+    dict[str, np.ndarray] — aggregated parameter dict
     """
     if not updates:
-        logger.warning("FedAvg: No updates to aggregate.")
-        return {}
+        raise ValueError("fedavg: 'updates' list is empty.")
 
-    weights = compute_combined_weights(updates, current_round, alpha, max_staleness)
+    n = len(updates)
 
-    # Get parameter names from first update
-    param_names = list(updates[0]["weights"].keys())
+    if weights is None:
+        norm_weights = [1.0 / n] * n
+    else:
+        if len(weights) != n:
+            raise ValueError(f"fedavg: len(weights)={len(weights)} != len(updates)={n}.")
+        total = sum(weights)
+        if total <= 0:
+            raise ValueError("fedavg: weights sum to zero or negative.")
+        norm_weights = [w / total for w in weights]
 
-    aggregated = {}
-    for name in param_names:
-        weighted_sum = np.zeros_like(updates[0]["weights"][name], dtype=np.float64)
-        for u in updates:
-            cid = u["client_id"]
-            w = weights.get(cid, 0.0)
-            if w > 0.0:
-                weighted_sum += u["weights"][name].astype(np.float64) * w
-        aggregated[name] = weighted_sum
+    keys = updates[0].keys()
+    result = {
+        k: sum(w * u[k] for w, u in zip(norm_weights, updates))
+        for k in keys
+    }
 
-    logger.info(
-        "FedAvg: aggregated %d updates, weights=%s",
-        len(updates),
-        {k: f"{v:.4f}" for k, v in weights.items()},
-    )
-
-    return aggregated
+    logger.debug("fedavg — aggregated %d updates (equal_weights=%s).", n, weights is None)
+    return result

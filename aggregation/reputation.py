@@ -1,82 +1,75 @@
-# aggregation/reputation.py — Staleness-based reputation/weight scoring
+# aggregation/reputation.py — SABD-aware reputation-weighted aggregation
+"""
+aggregation/reputation.py
+=========================
+Reputation-weighted average using SABD-corrected divergence scores.
+Falls back to trimmed_mean when no meaningful reputation signal exists.
+"""
+
 import logging
 
-logger = logging.getLogger("fedbuff.aggregation.reputation")
+import numpy as np
+
+from aggregation.trimmed_mean import trimmed_mean
+
+logger = logging.getLogger(__name__)
 
 
-def compute_staleness_weight(
-    global_round_received: int,
-    current_global_round: int,
-    alpha: float,
-    max_staleness: int,
-) -> float:
+def reputation_aggregated(updates: list, weights: list = None) -> dict:
+    """Reputation-weighted aggregation with trimmed-mean fallback.
+
+    Case 1 — weights is None or all equal: falls back to trimmed_mean(beta=0.1).
+    Case 2 — weights contain variation: weighted average with normalised weights.
+
+    Parameters
+    ----------
+    updates : list[dict[str, np.ndarray]] — per-client weight deltas
+    weights : list[float] | None — per-client reputation scores (higher = more trusted)
+
+    Returns
+    -------
+    dict[str, np.ndarray] — aggregated parameter dict
     """
-    Computes a reputation weight for an update based on its staleness.
-    staleness = current_global_round - global_round_received
-    If staleness > max_staleness: return 0.0 (update rejected as too stale).
-    Otherwise: return 1.0 / (1.0 + alpha * staleness)
-    A fresh update (staleness=0) returns 1.0.
-    """
-    staleness = current_global_round - global_round_received
-    if staleness > max_staleness:
+    if not updates:
+        raise ValueError("reputation_aggregated: 'updates' list is empty.")
+
+    n = len(updates)
+
+    if weights is None:
+        logger.debug("reputation_aggregated — no weights; falling back to trimmed_mean.")
+        return trimmed_mean(updates, beta=0.1)
+
+    if len(weights) != n:
+        raise ValueError(
+            f"reputation_aggregated: len(weights)={len(weights)} != len(updates)={n}."
+        )
+
+    w_arr = np.array(weights, dtype=float)
+
+    if np.allclose(w_arr, w_arr[0]):
         logger.debug(
-            "Update too stale: staleness=%d > max=%d, weight=0.0",
-            staleness, max_staleness,
+            "reputation_aggregated — all weights equal (%.4f); falling back to trimmed_mean.",
+            w_arr[0],
         )
-        return 0.0
-    weight = 1.0 / (1.0 + alpha * staleness)
+        return trimmed_mean(updates, beta=0.1)
+
+    total = w_arr.sum()
+    if total <= 0:
+        raise ValueError("reputation_aggregated: reputation weights sum to zero or negative.")
+
+    norm_weights = w_arr / total
+
+    result = {}
+    for key in updates[0].keys():
+        result[key] = sum(
+            float(norm_weights[i]) * updates[i][key]
+            for i in range(n)
+        )
+
     logger.debug(
-        "Staleness weight: staleness=%d, alpha=%.2f, weight=%.4f",
-        staleness, alpha, weight,
+        "reputation_aggregated — %d clients, weight range [%.4f, %.4f], "
+        "entropy=%.4f bits.",
+        n, float(norm_weights.min()), float(norm_weights.max()),
+        float(-np.sum(norm_weights * np.log2(norm_weights + 1e-12))),
     )
-    return weight
-
-
-def compute_sample_reputation_weights(updates: list) -> dict:
-    """
-    Returns a dict {client_id: weight} normalised so weights sum to 1.0.
-    Weight for each client = num_samples_i / sum(num_samples).
-    Used by FedAvg and as a component in combined staleness+sample weighting.
-    """
-    total_samples = sum(u["num_samples"] for u in updates)
-    if total_samples == 0:
-        n = len(updates)
-        return {u["client_id"]: 1.0 / n for u in updates} if n > 0 else {}
-
-    weights = {}
-    for u in updates:
-        weights[u["client_id"]] = u["num_samples"] / total_samples
-    return weights
-
-
-def compute_combined_weights(
-    updates: list,
-    current_round: int,
-    alpha: float,
-    max_staleness: int,
-) -> dict:
-    """
-    Returns {client_id: weight} combining staleness weight and sample count.
-    combined_weight_i = staleness_weight_i * num_samples_i
-    Normalised so weights sum to 1.0.
-    Updates with staleness_weight == 0.0 are excluded (weight set to 0.0).
-    """
-    raw_weights = {}
-    for u in updates:
-        s_weight = compute_staleness_weight(
-            u.get("global_round_received", current_round),
-            current_round,
-            alpha,
-            max_staleness,
-        )
-        raw_weights[u["client_id"]] = s_weight * u["num_samples"]
-
-    total = sum(raw_weights.values())
-    if total == 0:
-        n = len(updates)
-        return {u["client_id"]: 1.0 / n for u in updates} if n > 0 else {}
-
-    normalized = {}
-    for cid, w in raw_weights.items():
-        normalized[cid] = w / total
-    return normalized
+    return result

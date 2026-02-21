@@ -9,7 +9,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from detection.anomaly import check_l2_norm
 from detection.sabd import run_sabd
 from aggregation.trimmed_mean import trimmed_mean
-from aggregation.reputation import compute_staleness_weight
 from aggregation.aggregator import Aggregator
 from config import Settings
 
@@ -37,11 +36,9 @@ class TestGatekeeper:
         """Test 1: Gatekeeper blocks update with norm > threshold (2500 > 500)."""
         shapes = {"layer.weight": (64, 32), "layer.bias": (64,)}
         weights = {}
-        # Create weight_diff with large norm (~2500)
         for name, shape in shapes.items():
             weights[name] = np.random.normal(0, 1.0, shape).astype(np.float32)
 
-        # Scale to reach target norm of ~2500
         flat = np.concatenate([v.flatten() for v in weights.values()])
         current_norm = np.linalg.norm(flat)
         target_norm = 2500.0
@@ -74,7 +71,6 @@ class TestSABD:
         alice = make_update("alice", scale=0.01, shapes=shapes)
         bob = make_update("bob", scale=0.01, shapes=shapes)
 
-        # Mallory: sign-flip amplified
         mallory_weights = {}
         for name, shape in shapes.items():
             mallory_weights[name] = np.random.normal(0, 0.01, shape).astype(np.float32) * -5.0
@@ -96,57 +92,68 @@ class TestTrimmedMean:
     """Test trimmed mean aggregation."""
 
     def test_trimmed_mean_resists_outlier(self):
-        """Test 4: Trimmed mean aggregation resists outlier."""
+        """Test 4: Trimmed mean resists outliers via coordinate-wise trimming."""
         np.random.seed(42)
-        shapes = {"layer.weight": (32, 16)}
 
-        alice = make_update("alice", scale=0.01, shapes=shapes)
-        bob = make_update("bob", scale=0.01, shapes=shapes)
+        # Create raw weight dicts (not update dicts) for the new API
+        alice_w = {"layer.weight": np.random.normal(0, 0.01, (32, 16)).astype(np.float32)}
+        bob_w = {"layer.weight": np.random.normal(0, 0.01, (32, 16)).astype(np.float32)}
+        mallory_w = {"layer.weight": np.random.normal(0, 0.01, (32, 16)).astype(np.float32) * -5.0}
 
-        mallory_weights = {
-            "layer.weight": np.random.normal(0, 0.01, (32, 16)).astype(np.float32) * -5.0,
-        }
-        mallory = {
-            "client_id": "mallory",
-            "weights": mallory_weights,
-            "num_samples": 100,
-        }
-
-        aggregated, trust_scores = trimmed_mean([alice, bob, mallory], trim_fraction=0.2)
+        # New API: trimmed_mean takes list of raw dicts, returns aggregated dict
+        aggregated = trimmed_mean([alice_w, bob_w, mallory_w], beta=0.2)
 
         # Compute mean of Alice and Bob for comparison
-        honest_mean = (alice["weights"]["layer.weight"] + bob["weights"]["layer.weight"]) / 2.0
+        honest_mean = (alice_w["layer.weight"] + bob_w["layer.weight"]) / 2.0
 
-        # Aggregated should be close to honest mean (within 0.3)
+        # Aggregated should be close to honest mean
         diff = np.abs(aggregated["layer.weight"] - honest_mean)
         assert np.all(diff < 0.3), f"Max diff: {np.max(diff)}"
 
 
-class TestStaleness:
-    """Test staleness weight computation."""
+class TestModelHistoryBuffer:
+    """Test SABD-compatible model history buffer."""
 
-    def test_staleness_weight_formula(self):
-        """Test 5: Staleness weight formula correctness."""
-        # Recent update should have higher weight than older one
-        weight_old = compute_staleness_weight(1, 10, 0.5, 10)
-        weight_recent = compute_staleness_weight(9, 10, 0.5, 10)
-        assert 0 < weight_old < 1
-        assert weight_recent > weight_old
+    def test_model_history_buffer(self):
+        """Test 5: ModelHistoryBuffer records and computes drift correctly."""
+        from server.model_history import ModelHistoryBuffer
 
-        # Too stale update should return 0.0
-        weight_stale = compute_staleness_weight(0, 15, 0.5, 10)
-        assert weight_stale == 0.0
+        buf = ModelHistoryBuffer(max_size=5)
+        w0 = {"w": np.zeros((4,), dtype=np.float32)}
+        w1 = {"w": np.ones((4,), dtype=np.float32)}
 
-        # Fresh update (staleness=0) returns 1.0
-        weight_fresh = compute_staleness_weight(10, 10, 0.5, 10)
-        assert weight_fresh == 1.0
+        buf.record(0, w0)
+        buf.record(1, w1)
+
+        assert buf.has_version(0)
+        assert buf.has_version(1)
+        assert len(buf) == 2
+
+        # Drift from version 0 to w1 should be all-ones
+        drift = buf.get_drift(0, w1)
+        np.testing.assert_array_almost_equal(drift["w"], np.ones(4))
+
+    def test_buffer_eviction(self):
+        """Test 6: Buffer evicts oldest entries when full."""
+        from server.model_history import ModelHistoryBuffer
+
+        buf = ModelHistoryBuffer(max_size=3)
+        for i in range(5):
+            buf.record(i, {"w": np.full((2,), i, dtype=np.float32)})
+
+        assert len(buf) == 3
+        assert not buf.has_version(0)
+        assert not buf.has_version(1)
+        assert buf.has_version(2)
+        assert buf.has_version(3)
+        assert buf.has_version(4)
 
 
 class TestAggregatorPipeline:
     """Test the full two-layer aggregation pipeline."""
 
     def test_aggregator_two_layer_pipeline(self):
-        """Test 6: Aggregator rejects Mallory via gatekeeper when L2 > threshold."""
+        """Test 7: Aggregator rejects Mallory via gatekeeper when L2 > threshold."""
         np.random.seed(42)
         shapes = {"layer.weight": (32, 16), "layer.bias": (32,)}
 
@@ -154,7 +161,6 @@ class TestAggregatorPipeline:
         bob = make_update("bob", scale=0.01, shapes=shapes)
         charlie = make_update("charlie", scale=0.01, shapes=shapes)
 
-        # Mallory: massive norm to trigger gatekeeper
         mallory_weights = {}
         for name, shape in shapes.items():
             w = np.random.normal(0, 0.01, shape).astype(np.float32)
@@ -170,8 +176,7 @@ class TestAggregatorPipeline:
             "task": "femnist",
         }
 
-        config = Settings()
-        config.L2_NORM_THRESHOLD = 500.0
+        config = Settings(L2_NORM_THRESHOLD=500.0)
         aggregator = Aggregator(strategy="krum", config=config)
 
         result = aggregator.aggregate(
@@ -179,7 +184,9 @@ class TestAggregatorPipeline:
         )
 
         assert "mallory" in result.gatekeeper_rejected
-        assert result.trust_scores.get("mallory", 1.0) == 0.0
+        # Mallory was rejected by gatekeeper, so she won't appear in trust_scores
+        # Verify she's not in accepted clients
+        assert "mallory" not in result.accepted_clients
 
 
 if __name__ == "__main__":

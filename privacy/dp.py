@@ -1,18 +1,123 @@
-# privacy/dp.py — PrivacyEngine: gradient clipping, DP noise, secure aggregation mask
-import math
-import numpy as np
+# privacy/dp.py — DifferentialPrivacyMechanism + legacy PrivacyEngine
+"""
+privacy/dp.py
+=============
+Contains:
+- DifferentialPrivacyMechanism: ayush's rigorous (epsilon, delta)-DP mechanism
+  with clip_gradients, add_noise, privatize, and compute_epsilon.
+- PrivacyEngine: akshat's legacy engine (backward compat for WebSocket client).
+  Delegates to DifferentialPrivacyMechanism internally.
+"""
+
 import logging
+import math
 
-logger = logging.getLogger("fedbuff.privacy")
+import numpy as np
 
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Advanced DP mechanism (from ayush)
+# ---------------------------------------------------------------------------
+
+class DifferentialPrivacyMechanism:
+    """Client-side (epsilon, delta)-DP via gradient clipping and Gaussian noise.
+
+    Two-step pipeline:
+    1. clip_gradients — project onto L2 ball of radius clip_norm
+    2. add_noise — add N(0, sigma^2 I) where sigma = noise_multiplier * clip_norm
+
+    Parameters
+    ----------
+    noise_multiplier : float — sigma_mult (0.5-2.0 typical)
+    clip_norm        : float — L2 sensitivity bound C (0.1-5.0 typical)
+    """
+
+    def __init__(self, noise_multiplier: float, clip_norm: float) -> None:
+        self.noise_multiplier = noise_multiplier
+        self.clip_norm = clip_norm
+        logger.info(
+            "DifferentialPrivacyMechanism initialised — "
+            "noise_multiplier=%.4f, clip_norm=%.4f",
+            noise_multiplier, clip_norm,
+        )
+
+    def clip_gradients(self, weight_delta: dict) -> dict:
+        """Bound L2 norm of the update to clip_norm (sensitivity bounding)."""
+        flat = np.concatenate([v.flatten() for v in weight_delta.values()])
+        global_norm = np.linalg.norm(flat)
+
+        clip_factor = min(1.0, self.clip_norm / (global_norm + 1e-8))
+        clipped = {k: v * clip_factor for k, v in weight_delta.items()}
+
+        logger.debug(
+            "clip_gradients — global_norm=%.4f, clip_norm=%.4f, "
+            "clip_factor=%.4f (active=%s)",
+            global_norm, self.clip_norm, clip_factor, clip_factor < 1.0,
+        )
+        return clipped
+
+    def add_noise(self, weight_delta: dict) -> dict:
+        """Add calibrated Gaussian noise: sigma = noise_multiplier * clip_norm."""
+        noise_std = self.noise_multiplier * self.clip_norm
+        noised = {
+            k: v + np.random.normal(0.0, noise_std, v.shape)
+            for k, v in weight_delta.items()
+        }
+        logger.debug(
+            "add_noise — noise_std=%.6f (noise_multiplier=%.4f * clip_norm=%.4f)",
+            noise_std, self.noise_multiplier, self.clip_norm,
+        )
+        return noised
+
+    def privatize(self, weight_delta: dict) -> dict:
+        """Apply full DP pipeline: clip then add noise."""
+        clipped = self.clip_gradients(weight_delta)
+        noised = self.add_noise(clipped)
+        logger.debug("privatize — clip + noise applied.")
+        return noised
+
+    def compute_epsilon(self, num_rounds: int, dataset_size: int,
+                        delta: float = 1e-5) -> float:
+        """Estimate cumulative privacy budget epsilon after num_rounds.
+
+        Uses strong composition bound:
+            epsilon ~= sqrt(2T * ln(1.25/delta)) * (q / sigma_mult)
+        """
+        q = (self.batch_size / dataset_size) if hasattr(self, "batch_size") else 0.01
+
+        epsilon = (
+            math.sqrt(2 * num_rounds * math.log(1.25 / delta))
+            * q
+            / self.noise_multiplier
+        )
+
+        if epsilon > 10.0:
+            logger.warning(
+                "Estimated epsilon=%.2f > 10 after %d rounds. Privacy is WEAK.",
+                epsilon, num_rounds,
+            )
+        elif epsilon < 1.0:
+            logger.info("Estimated epsilon=%.4f < 1 after %d rounds. Strong privacy.", epsilon, num_rounds)
+        else:
+            logger.info("Estimated epsilon=%.4f after %d rounds (delta=%.2e).", epsilon, num_rounds, delta)
+
+        return epsilon
+
+
+# ---------------------------------------------------------------------------
+# Legacy PrivacyEngine (from akshat — backward compat for WebSocket client)
+# ---------------------------------------------------------------------------
 
 class PrivacyEngine:
-    """Implements local differential privacy for federated learning updates.
+    """Backward-compatible wrapper around DifferentialPrivacyMechanism.
 
-    Applies three operations sequentially:
-    1. Global L2 gradient clipping
-    2. Gaussian noise addition (calibrated to clipping norm)
-    3. Secure aggregation mask simulation
+    Provides the same API as akshat's original PrivacyEngine:
+    - clip_and_noise(weight_diff) -> dict
+    - apply_secure_aggregation_mask(weight_diff) -> dict
+    - process(weight_diff) -> dict   (clip + noise + mask)
+    - get_privacy_budget() -> dict
     """
 
     def __init__(self, max_grad_norm: float = 1.0, noise_multiplier: float = 1.1,
@@ -23,75 +128,37 @@ class PrivacyEngine:
         self.epsilon_spent = 0.0
         self._step_count = 0
 
+        self._dp = DifferentialPrivacyMechanism(
+            noise_multiplier=noise_multiplier,
+            clip_norm=max_grad_norm,
+        )
+
     def clip_and_noise(self, weight_diff: dict) -> dict:
-        """
-        Step 1 — Global L2 clipping:
-          Flatten all arrays. If norm > max_grad_norm, scale all by (max_grad_norm / norm).
-        Step 2 — Gaussian noise:
-          sigma = noise_multiplier * max_grad_norm
-          For each array: add numpy.random.normal(0, sigma, array.shape)
-        Step 3 — Privacy accounting (simplified moments accountant):
-          epsilon_step = 2.0 * math.log(1.0 / delta) / (noise_multiplier ** 2)
-          epsilon_spent += epsilon_step
-          step_count += 1
-        Returns modified weight_diff.
-        """
-        # Step 1: Global L2 clipping
-        all_flat = np.concatenate([v.flatten() for v in weight_diff.values()])
-        global_norm = float(np.linalg.norm(all_flat))
+        """Clip gradients + add Gaussian noise + update privacy accounting."""
+        result = self._dp.privatize(weight_diff)
 
-        clipped = {}
-        if global_norm > self.max_grad_norm:
-            scale_factor = self.max_grad_norm / global_norm
-            for key, val in weight_diff.items():
-                clipped[key] = val * scale_factor
-            logger.debug(
-                "Clipped gradient: norm %.4f -> %.4f (scale %.6f)",
-                global_norm, self.max_grad_norm, scale_factor
-            )
-        else:
-            for key, val in weight_diff.items():
-                clipped[key] = val.copy()
-
-        # Step 2: Gaussian noise
-        sigma = self.noise_multiplier * self.max_grad_norm
-        noised = {}
-        for key, val in clipped.items():
-            noise = np.random.normal(0.0, sigma, val.shape)
-            noised[key] = val + noise
-
-        # Step 3: Privacy accounting (simplified moments accountant)
+        # Privacy accounting (simplified moments accountant)
         epsilon_step = 2.0 * math.log(1.0 / self.delta) / (self.noise_multiplier ** 2)
         self.epsilon_spent += epsilon_step
         self._step_count += 1
 
         logger.debug(
             "DP applied: sigma=%.4f, epsilon_step=%.4f, total_epsilon=%.4f, steps=%d",
-            sigma, epsilon_step, self.epsilon_spent, self._step_count
+            self.noise_multiplier * self.max_grad_norm,
+            epsilon_step, self.epsilon_spent, self._step_count,
         )
-
-        return noised
+        return result
 
     def apply_secure_aggregation_mask(self, weight_diff: dict) -> dict:
-        """
-        Simulates Zero-Sum Masking from Secure Aggregation protocol.
-        Adds pseudo-random mask from Uniform(-0.001, 0.001) to each parameter array.
-
-        This mask is not cryptographically coupled to other clients' masks.
-        It represents the masking layer for demonstration purposes only.
-
-        Returns masked weight_diff.
-        """
+        """Simulates zero-sum masking from Secure Aggregation protocol."""
         masked = {}
         for key, val in weight_diff.items():
-            # This mask is not cryptographically coupled to other clients' masks.
-            # It represents the masking layer for demonstration purposes only.
             mask = np.random.uniform(-0.001, 0.001, val.shape)
             masked[key] = val + mask
         return masked
 
     def process(self, weight_diff: dict) -> dict:
-        """Calls clip_and_noise() then apply_secure_aggregation_mask(). Returns result."""
+        """Full pipeline: clip_and_noise() + apply_secure_aggregation_mask()."""
         return self.apply_secure_aggregation_mask(self.clip_and_noise(weight_diff))
 
     def get_privacy_budget(self) -> dict:

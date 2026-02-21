@@ -1,44 +1,44 @@
-# aggregation/coordinate_median.py — Coordinate-wise median aggregation
-import numpy as np
+# aggregation/coordinate_median.py — Element-wise median (50% breakdown point)
+"""
+aggregation/coordinate_median.py
+=================================
+Coordinate-wise median aggregation for Byzantine robustness.
+Breakdown point 50% — tolerates up to floor((n-1)/2) Byzantine clients.
+
+Reference: Yin et al., "Byzantine-Robust Distributed Learning: Towards Optimal
+Statistical Rates", ICML 2018.
+"""
+
 import logging
 
-logger = logging.getLogger("fedbuff.aggregation.coordinate_median")
+import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
-def coordinate_median(updates: list) -> tuple:
-    """
-    Coordinate-wise median aggregation strategy.
-    For each parameter tensor coordinate, computes the median value across all clients.
+def coordinate_median(updates: list, _weights: list = None) -> dict:
+    """Element-wise median across all client updates.
 
-    1. For each parameter name p:
-         stack all clients' values for p into matrix shape (num_clients, *param_shape)
-         compute np.median along axis=0
-    2. All clients receive trust_score = 1.0 (no explicit rejection by this strategy).
+    Parameters
+    ----------
+    updates : list[dict[str, np.ndarray]] — per-client weight deltas
+    _weights : list[float] | None — accepted for interface compat; not used
 
-    Returns:
-        (aggregated_weights: dict, trust_scores: dict)
-        trust_scores: {client_id: 1.0 for all}
+    Returns
+    -------
+    dict[str, np.ndarray] — coordinate-wise median of all updates
     """
     if not updates:
-        logger.warning("Coordinate median: No updates to aggregate.")
-        return {}, {}
+        raise ValueError("coordinate_median: 'updates' list is empty.")
 
-    param_names = list(updates[0]["weights"].keys())
-    num_clients = len(updates)
+    n = len(updates)
+    result = {}
+    for key in updates[0].keys():
+        matrix = np.stack([u[key] for u in updates], axis=0)
+        result[key] = np.median(matrix, axis=0)
 
-    aggregated = {}
-    for name in param_names:
-        stacked = np.stack(
-            [u["weights"][name].astype(np.float64) for u in updates],
-            axis=0,
-        )  # shape: (num_clients, *param_shape)
-        aggregated[name] = np.median(stacked, axis=0)
-
-    trust_scores = {u["client_id"]: 1.0 for u in updates}
-
-    logger.info(
-        "Coordinate median: aggregated %d updates across %d parameters.",
-        num_clients, len(param_names),
+    logger.debug(
+        "coordinate_median — aggregated %d clients (breakdown point: n=%d -> tolerates %d Byzantine).",
+        n, n, (n - 1) // 2,
     )
-
-    return aggregated, trust_scores
+    return result

@@ -1,107 +1,181 @@
-# server/model_history.py — Task-aware model registry, serialization, checkpointing
-import uuid
-import pickle
-import base64
-import json
-import os
+# server/model_history.py — Rolling buffer of versioned model snapshots + legacy ModelHistory
+"""
+server/model_history.py
+=======================
+Contains:
+- ModelHistoryBuffer: SABD-compatible rolling snapshot buffer keyed by version_id.
+- ModelHistory: akshat's legacy model history for WebSocket server (serialisation, rounds).
+
+ModelHistoryBuffer is used by SABD to compute per-parameter drift between versions.
+ModelHistory is used by the FastAPI WebSocket server for round tracking and model serving.
+"""
+
 import logging
-import numpy as np
-import msgpack
+import time
+import hashlib
+import base64
+from collections import deque
 from datetime import datetime, timezone
 
-logger = logging.getLogger("fedbuff.server.model_history")
+import numpy as np
+import msgpack
 
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# SABD-compatible rolling buffer (from ayush)
+# ---------------------------------------------------------------------------
+
+class ModelHistoryBuffer:
+    """Rolling buffer of versioned global model snapshots for SABD drift computation.
+
+    Parameters
+    ----------
+    max_size : int
+        Maximum number of model snapshots to retain (default 15).
+    """
+
+    def __init__(self, max_size: int) -> None:
+        self._history: dict = {}
+        self._order: deque = deque(maxlen=max_size)
+        self.max_size = max_size
+        logger.debug("ModelHistoryBuffer initialised (max_size=%d).", max_size)
+
+    def record(self, version_id: int, weights_dict: dict) -> None:
+        """Snapshot and store the global model at version_id."""
+        if len(self._history) >= self.max_size:
+            oldest = self._order[0]
+            del self._history[oldest]
+            logger.debug("Evicted model snapshot version %d from history.", oldest)
+
+        self._history[version_id] = {k: v.copy() for k, v in weights_dict.items()}
+        self._order.append(version_id)
+
+        logger.info(
+            "Recorded model version %d. Buffer size: %d / %d.",
+            version_id, len(self._history), self.max_size,
+        )
+
+    def get_drift(self, from_version: int, to_weights: dict) -> dict:
+        """Compute per-parameter drift: delta[k] = theta_t[k] - theta_s[k]."""
+        if from_version not in self._history:
+            available = sorted(self._history.keys())
+            raise ValueError(
+                f"Model version {from_version} is not in the history buffer. "
+                f"Available versions: {available}. "
+                f"The snapshot may have been evicted (max_size={self.max_size}). "
+                "Consider increasing Config.model_history_size."
+            )
+
+        base = self._history[from_version]
+        drift = {k: to_weights[k] - base[k] for k in to_weights}
+
+        drift_norm = float(np.sqrt(sum(np.sum(d ** 2) for d in drift.values())))
+        logger.debug("Drift from version %d -> current: L2 norm = %.6f", from_version, drift_norm)
+        return drift
+
+    def has_version(self, version_id: int) -> bool:
+        """Return True if version_id is currently in the buffer."""
+        return version_id in self._history
+
+    def get_oldest_version(self):
+        """Return the version_id of the oldest retained snapshot, or None if empty."""
+        return self._order[0] if self._order else None
+
+    def get_latest_version(self):
+        """Return the version_id of the most recently recorded snapshot, or None."""
+        return self._order[-1] if self._order else None
+
+    def __len__(self) -> int:
+        return len(self._history)
+
+    def __repr__(self) -> str:
+        return (
+            f"ModelHistoryBuffer(max_size={self.max_size}, "
+            f"len={len(self)}, "
+            f"versions={list(self._order)})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Legacy akshat ModelHistory for WebSocket server
+# ---------------------------------------------------------------------------
 
 class ModelHistory:
-    """Task-aware model registry with serialization and checkpointing support."""
+    """Per-task model management: round tracking, versioning, serialisation.
+    Used by the FastAPI WebSocket server to serve models and track rounds.
+    """
 
-    def __init__(self, models: dict, checkpoint_dir: str):
-        """
-        models: {"femnist": FEMNISTNet(), "shakespeare": ShakespeareNet()}
-        Builds self.state with current weights and history for each task.
-        """
+    def __init__(self, initial_models: dict, checkpoint_dir: str = "./results/checkpoints"):
+        self.models = {}
         self.checkpoint_dir = checkpoint_dir
+
+        import os
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        self.state = {}
-        for task, model in models.items():
+        for task, model in initial_models.items():
             weights = {}
             for name, param in model.named_parameters():
                 weights[name] = param.data.cpu().numpy().copy()
 
-            self.state[task] = {
-                "current_round": 0,
-                "version": str(uuid.uuid4()),
+            self.models[task] = {
                 "weights": weights,
+                "round": 0,
+                "version": self._compute_version(weights),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "loss_history": [],
-                "accuracy_history": [],
             }
             logger.info(
-                "ModelHistory initialized for task=%s, version=%s, params=%d",
-                task, self.state[task]["version"], len(weights),
+                "ModelHistory: initialized task=%s, params=%d, version=%s",
+                task, sum(w.size for w in weights.values()),
+                self.models[task]["version"][:8],
             )
 
-    def update(self, task: str, aggregated_weights: dict,
-               loss: float, accuracy: float = None) -> None:
-        """
-        Increments current_round for the task.
-        Replaces weights. Appends loss (and accuracy if provided) to history.
-        Generates a new version UUID.
-        Every 5 rounds, pickles state to checkpoint file.
-        """
-        if task not in self.state:
-            raise ValueError(f"Unknown task: {task}")
+    def _compute_version(self, weights: dict) -> str:
+        """Compute a hash-based version string for a set of weights."""
+        flat = np.concatenate([v.flatten() for v in weights.values()])
+        hash_bytes = hashlib.sha256(flat.tobytes()).digest()
+        return base64.b64encode(hash_bytes).decode("utf-8")[:16]
 
-        task_state = self.state[task]
-        task_state["current_round"] += 1
-        task_state["version"] = str(uuid.uuid4())
-
-        # Apply aggregated weight diffs to current weights
-        for name, diff in aggregated_weights.items():
-            if name in task_state["weights"]:
-                task_state["weights"][name] = (
-                    task_state["weights"][name].astype(np.float64) + diff.astype(np.float64)
-                ).astype(np.float32)
-            else:
-                task_state["weights"][name] = diff.astype(np.float32)
-
-        task_state["loss_history"].append(loss)
-        if accuracy is not None:
-            task_state["accuracy_history"].append(accuracy)
-
-        current_round = task_state["current_round"]
-        logger.info(
-            "ModelHistory updated: task=%s, round=%d, version=%s, loss=%.6f",
-            task, current_round, task_state["version"], loss,
-        )
-
-        # Checkpoint every 5 rounds
-        if current_round % 5 == 0:
-            checkpoint_path = os.path.join(
-                self.checkpoint_dir,
-                f"{task}_round_{current_round:04d}.pkl",
-            )
-            try:
-                with open(checkpoint_path, "wb") as f:
-                    pickle.dump(task_state, f)
-                logger.info(
-                    "Checkpoint saved: %s (round %d)", checkpoint_path, current_round
-                )
-            except Exception as e:
-                logger.error("Failed to save checkpoint: %s", e)
+    def get_round(self, task: str) -> int:
+        """Get current round number for a task."""
+        if task not in self.models:
+            return 0
+        return self.models[task]["round"]
 
     def get_latest(self, task: str) -> dict:
-        """Returns compact representation of latest model for a task."""
-        if task not in self.state:
-            raise ValueError(f"Unknown task: {task}")
+        """Get the latest model info for a task (weights, round, version, timestamp)."""
+        if task not in self.models:
+            return {"weights": {}, "round": 0, "version": "", "timestamp": ""}
 
-        task_state = self.state[task]
+        model_info = self.models[task]
+        # Serialize weights for WebSocket transmission
+        serialized = self.serialize_weights(model_info["weights"])
         return {
-            "version": task_state["version"],
-            "round": task_state["current_round"],
-            "weights": self.serialize_weights(task_state["weights"]),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "weights": serialized,
+            "round": model_info["round"],
+            "version": model_info["version"],
+            "timestamp": model_info["timestamp"],
         }
+
+    def update(self, task: str, new_weights: dict, loss: float = 0.0) -> None:
+        """Update the global model for a task after aggregation."""
+        if task not in self.models:
+            logger.warning("ModelHistory.update: unknown task=%s", task)
+            return
+
+        self.models[task]["weights"] = {k: v.copy() for k, v in new_weights.items()}
+        self.models[task]["round"] += 1
+        self.models[task]["version"] = self._compute_version(new_weights)
+        self.models[task]["timestamp"] = datetime.now(timezone.utc).isoformat()
+        self.models[task]["loss_history"].append(loss)
+
+        logger.info(
+            "ModelHistory: updated task=%s, round=%d, loss=%.6f, version=%s",
+            task, self.models[task]["round"], loss,
+            self.models[task]["version"][:8],
+        )
 
     def serialize_weights(self, weights: dict) -> str:
         """numpy arrays -> lists -> msgpack bytes -> base64 string."""
@@ -120,27 +194,3 @@ class ModelHistory:
             k = key if isinstance(key, str) else key.decode("utf-8")
             weights[k] = np.array(val, dtype=np.float32)
         return weights
-
-    def get_loss_history(self, task: str) -> list:
-        """Returns the loss history for a task."""
-        if task not in self.state:
-            return []
-        return self.state[task]["loss_history"]
-
-    def get_accuracy_history(self, task: str) -> list:
-        """Returns the accuracy history for a task."""
-        if task not in self.state:
-            return []
-        return self.state[task].get("accuracy_history", [])
-
-    def get_weights(self, task: str) -> dict:
-        """Returns the current numpy weights dict for a task."""
-        if task not in self.state:
-            raise ValueError(f"Unknown task: {task}")
-        return self.state[task]["weights"]
-
-    def get_round(self, task: str) -> int:
-        """Returns the current round for a task."""
-        if task not in self.state:
-            return 0
-        return self.state[task]["current_round"]
