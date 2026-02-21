@@ -1,6 +1,19 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { useStore } from "@/lib/store";
+import { USE_MOCK, WS_BASE_URL } from "@/lib/config";
+import {
+  apiStartTraining,
+  apiPauseTraining,
+  apiResumeTraining,
+  apiBlockNode as apiBlockNodeFn,
+  apiUnblockNode as apiUnblockNodeFn,
+  apiTrainingStatus,
+  apiUpdateTrainingConfig,
+  apiListProjects,
+  getToken,
+} from "@/lib/api";
+import { getAllProjects } from "@/lib/projectUtils";
 import {
   MOCK_PROJECTS,
   generateNodes,
@@ -18,11 +31,11 @@ const NULL_FL = {
   isRunning: false,
   currentRound: 0,
   totalRounds: 50,
-  blockNode: () => { },
-  unblockNode: () => { },
-  setAggregationMethod: () => { },
-  pause: () => { },
-  resume: () => { },
+  blockNode: () => {},
+  unblockNode: () => {},
+  setAggregationMethod: () => {},
+  pause: () => {},
+  resume: () => {},
 };
 
 export default function useFL(projectId) {
@@ -37,9 +50,21 @@ export default function useFL(projectId) {
   const storeUnblockNode = useStore((s) => s.unblockNode);
   const pushNotification = useStore((s) => s.pushNotification);
 
-  const nodes = useMemo(() => nodesByProject[projectId] || [], [nodesByProject, projectId]);
-  const allRounds = useMemo(() => roundsByProject[projectId] || [], [roundsByProject, projectId]);
-  const project = useMemo(() => MOCK_PROJECTS.find((p) => p.id === projectId), [projectId]);
+  const nodes = useMemo(
+    () => nodesByProject[projectId] || [],
+    [nodesByProject, projectId],
+  );
+  const allRounds = useMemo(
+    () => roundsByProject[projectId] || [],
+    [roundsByProject, projectId],
+  );
+  const project = useMemo(() => {
+    if (USE_MOCK) {
+      return MOCK_PROJECTS.find((p) => p.id === projectId);
+    }
+    const store = useStore.getState();
+    return (store.projects || []).find((p) => p.id === projectId);
+  }, [projectId]);
 
   const [currentRound, setCurrentRound] = useState(0);
   const [isRunning, setIsRunning] = useState(true);
@@ -92,15 +117,43 @@ export default function useFL(projectId) {
       const patch = { ...node };
 
       if (node.isByzantine) {
-        patch.trust = clampVal(node.trust + randomBetween(-0.04, 0.01), 0.02, 0.28);
-        patch.cosineDistance = clampVal(node.cosineDistance + randomBetween(-0.05, 0.09), 0.5, 0.98);
+        patch.trust = clampVal(
+          node.trust + randomBetween(-0.04, 0.01),
+          0.02,
+          0.28,
+        );
+        patch.cosineDistance = clampVal(
+          node.cosineDistance + randomBetween(-0.05, 0.09),
+          0.5,
+          0.98,
+        );
       } else if (node.isSlow) {
-        patch.trust = clampVal(node.trust + randomBetween(-0.01, 0.03), 0.55, 0.95);
-        patch.cosineDistance = clampVal(node.cosineDistance + randomBetween(-0.02, 0.02), 0.01, 0.18);
-        patch.staleness = clampVal(node.staleness + (Math.random() < 0.4 ? 1 : -1), 0, 9);
+        patch.trust = clampVal(
+          node.trust + randomBetween(-0.01, 0.03),
+          0.55,
+          0.95,
+        );
+        patch.cosineDistance = clampVal(
+          node.cosineDistance + randomBetween(-0.02, 0.02),
+          0.01,
+          0.18,
+        );
+        patch.staleness = clampVal(
+          node.staleness + (Math.random() < 0.4 ? 1 : -1),
+          0,
+          9,
+        );
       } else {
-        patch.trust = clampVal(node.trust + randomBetween(-0.01, 0.02), 0.72, 1.0);
-        patch.cosineDistance = clampVal(node.cosineDistance + randomBetween(-0.015, 0.015), 0.01, 0.12);
+        patch.trust = clampVal(
+          node.trust + randomBetween(-0.01, 0.02),
+          0.72,
+          1.0,
+        );
+        patch.cosineDistance = clampVal(
+          node.cosineDistance + randomBetween(-0.015, 0.015),
+          0.01,
+          0.12,
+        );
         patch.staleness = Math.random() < 0.1 ? 1 : 0;
       }
 
@@ -117,7 +170,8 @@ export default function useFL(projectId) {
 
       // Update GanttRef
       const nowSec = Date.now() / 1000;
-      const duration = node.isSlow ? randomBetween(2.5, 5) : randomBetween(0.4, 1.5);
+      const duration =
+        node.isSlow ? randomBetween(2.5, 5) : randomBetween(0.4, 1.5);
       newGanttBlocks.push({
         nodeId: node.nodeId,
         displayId: node.displayId,
@@ -143,8 +197,86 @@ export default function useFL(projectId) {
     }
   }, [projectId, setAllNodes, appendRound, project?.name, pushNotification]);
 
+  // ── WebSocket connection for API mode ──────────────────
+  const wsRef = useRef(null);
+
   useEffect(() => {
-    if (!projectId) return;
+    if (USE_MOCK || !projectId) return;
+
+    const token = getToken() || "";
+    const wsUrl = `${WS_BASE_URL}/api/ws?projectId=${projectId}&token=${token}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log(`[WS] Connected to training for ${projectId}`);
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        const { event: eventType, data } = msg;
+
+        if (eventType === "round_complete") {
+          if (data.metrics) {
+            appendRound(projectId, data.metrics);
+            setCurrentRound(data.metrics.round);
+            currentRoundRef.current = data.metrics.round;
+          }
+          if (data.nodes) {
+            setAllNodes(projectId, data.nodes);
+          }
+          if (data.ganttBlocks) {
+            ganttBlocksRef.current = [
+              ...ganttBlocksRef.current,
+              ...data.ganttBlocks,
+            ].slice(-40);
+          }
+        } else if (eventType === "training_status") {
+          setIsRunning(data.status === "running");
+          setCurrentRound(data.currentRound || 0);
+          currentRoundRef.current = data.currentRound || 0;
+        } else if (eventType === "node_flagged") {
+          pushNotification({
+            type: "alert",
+            message: `Node ${data.displayId} flagged: ${data.reason}`,
+            projectId,
+          });
+        } else if (eventType === "initial_state") {
+          if (data.nodes) setAllNodes(projectId, data.nodes);
+          if (data.metrics) {
+            data.metrics.forEach((m) => appendRound(projectId, m));
+          }
+          if (data.status) {
+            setIsRunning(data.status.status === "running");
+            setCurrentRound(data.status.currentRound || 0);
+            currentRoundRef.current = data.status.currentRound || 0;
+          }
+        }
+      } catch (err) {
+        console.error("[WS] Parse error:", err);
+      }
+    };
+
+    ws.onerror = () => console.error("[WS] WebSocket error");
+    ws.onclose = () => console.log("[WS] Disconnected");
+
+    // Ping every 30s to keep alive
+    const pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "ping" }));
+      }
+    }, 30000);
+
+    return () => {
+      clearInterval(pingInterval);
+      ws.close();
+    };
+  }, [projectId, appendRound, setAllNodes, pushNotification]);
+
+  // ── Mock simulation timer ─────────────────────────────
+  useEffect(() => {
+    if (!USE_MOCK || !projectId) return;
     if (isRunning) {
       intervalRef.current = setInterval(tick, 2000);
     } else {
@@ -154,7 +286,15 @@ export default function useFL(projectId) {
   }, [isRunning, tick, projectId]);
 
   const blockNode = useCallback(
-    (nodeId) => {
+    async (nodeId) => {
+      if (!USE_MOCK) {
+        try {
+          await apiBlockNodeFn(projectId, nodeId);
+        } catch (err) {
+          toast.error(err.message || "Failed to block node");
+          return;
+        }
+      }
       storeBlockNode(projectId, nodeId);
       const node = nodesRef.current.find((n) => n.nodeId === nodeId);
       const displayId = node?.displayId || nodeId;
@@ -172,11 +312,19 @@ export default function useFL(projectId) {
       });
       toast.success(`${displayId} blocked`);
     },
-    [projectId, storeBlockNode, pushActivity, pushNotification, project?.name]
+    [projectId, storeBlockNode, pushActivity, pushNotification, project?.name],
   );
 
   const unblockNode = useCallback(
-    (nodeId) => {
+    async (nodeId) => {
+      if (!USE_MOCK) {
+        try {
+          await apiUnblockNodeFn(projectId, nodeId);
+        } catch (err) {
+          toast.error(err.message || "Failed to unblock node");
+          return;
+        }
+      }
       storeUnblockNode(projectId, nodeId);
       const node = nodesRef.current.find((n) => n.nodeId === nodeId);
       const displayId = node?.displayId || nodeId;
@@ -189,7 +337,7 @@ export default function useFL(projectId) {
       });
       toast.success(`${displayId} unblocked`);
     },
-    [projectId, storeUnblockNode, pushActivity]
+    [projectId, storeUnblockNode, pushActivity],
   );
 
   return useMemo(() => {
@@ -206,9 +354,47 @@ export default function useFL(projectId) {
       totalRounds: project?.config?.numRounds || 50,
       blockNode,
       unblockNode,
-      setAggregationMethod: (method) => setMethod(projectId, method),
-      pause: () => setIsRunning(false),
-      resume: () => setIsRunning(true),
+      setAggregationMethod: (method) => {
+        setMethod(projectId, method);
+        if (!USE_MOCK) {
+          apiUpdateTrainingConfig(projectId, {
+            aggregationMethod: method,
+          }).catch(() => {});
+        }
+      },
+      pause: async () => {
+        if (!USE_MOCK) {
+          try {
+            await apiPauseTraining(projectId);
+          } catch (err) {
+            toast.error(err.message);
+            return;
+          }
+        }
+        setIsRunning(false);
+      },
+      resume: async () => {
+        if (!USE_MOCK) {
+          try {
+            await apiResumeTraining(projectId);
+          } catch (err) {
+            toast.error(err.message);
+            return;
+          }
+        }
+        setIsRunning(true);
+      },
+      start: async () => {
+        if (!USE_MOCK) {
+          try {
+            await apiStartTraining(projectId);
+          } catch (err) {
+            toast.error(err.message);
+            return;
+          }
+        }
+        setIsRunning(true);
+      },
     };
   }, [
     projectId,

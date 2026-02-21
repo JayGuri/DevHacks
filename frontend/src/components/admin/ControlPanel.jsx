@@ -6,12 +6,16 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import ConfirmDialog from "@/components/dashboard/ConfirmDialog";
 import { useStore } from "@/lib/store";
-import { MOCK_PROJECTS } from "@/lib/mockData";
+import { getAllProjects } from "@/lib/projectUtils";
 
 const AGGREGATORS = [
   { value: "trimmed_mean", desc: "Drop top/bottom k gradients" },
@@ -22,16 +26,22 @@ const AGGREGATORS = [
 ];
 
 export default function ControlPanel({ fl, projectId }) {
-  const methodByProject = useStore((s) => s.methodByProject);
-  const roundsByProject = useStore((s) => s.roundsByProject);
-  const pushNotification = useStore((s) => s.pushNotification);
+  const store = useStore();
+  const methodByProject = store.methodByProject;
+  const roundsByProject = store.roundsByProject;
+  const pushNotification = store.pushNotification;
 
-  const projectName = MOCK_PROJECTS.find((p) => p.id === projectId)?.name || projectId;
+  const projectName =
+    getAllProjects(store).find((p) => p.id === projectId)?.name || projectId;
 
   const currentMethod =
-    methodByProject[projectId] || fl.project?.config?.aggregationMethod || "trimmed_mean";
+    methodByProject[projectId] ||
+    fl.project?.config?.aggregationMethod ||
+    "trimmed_mean";
 
-  const [sabdLocal, setSabdLocal] = useState(fl.project?.config?.sabdAlpha ?? 0.5);
+  const [sabdLocal, setSabdLocal] = useState(
+    fl.project?.config?.sabdAlpha ?? 0.5,
+  );
 
   function handleExport() {
     const blob = new Blob([JSON.stringify(fl.allRounds, null, 2)], {
@@ -115,12 +125,11 @@ export default function ControlPanel({ fl, projectId }) {
           variant={fl.isRunning ? "outline" : "default"}
           onClick={() => (fl.isRunning ? fl.pause() : fl.resume())}
         >
-          {fl.isRunning ? (
+          {fl.isRunning ?
             <>
               <Pause size={14} className="mr-2" /> Pause Simulation
             </>
-          ) : (
-            <>
+          : <>
               <Play size={14} className="mr-2" />
               <span className="relative mr-2 flex h-2 w-2">
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
@@ -128,7 +137,7 @@ export default function ControlPanel({ fl, projectId }) {
               </span>
               Resume Simulation
             </>
-          )}
+          }
         </Button>
 
         {/* Round progress */}

@@ -1,6 +1,15 @@
 import { createContext, useContext, useState, useEffect } from "react";
 import { MOCK_USERS } from "@/lib/mockData";
 import { useStore } from "@/lib/store";
+import { USE_MOCK } from "@/lib/config";
+import {
+  apiLogin,
+  apiSignup,
+  apiGetMe,
+  getToken,
+  setToken,
+  clearToken,
+} from "@/lib/api";
 
 const AuthContext = createContext(null);
 
@@ -11,28 +20,60 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const setStoreUser = useStore((s) => s.setUser);
 
+  // Rehydrate user on mount
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        setCurrentUser(parsed);
-        setStoreUser(parsed);
+    async function rehydrate() {
+      try {
+        if (USE_MOCK) {
+          // Mock mode: use localStorage-stored user object
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            setCurrentUser(parsed);
+            setStoreUser(parsed);
+          }
+        } else {
+          // API mode: verify token with /auth/me
+          const token = getToken();
+          if (token) {
+            const data = await apiGetMe();
+            const user = data.user;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+            setCurrentUser(user);
+            setStoreUser(user);
+          }
+        }
+      } catch {
+        // Token expired or invalid — clear everything
+        clearToken();
+        localStorage.removeItem(STORAGE_KEY);
+        setCurrentUser(null);
       }
-    } catch {
-      setCurrentUser(null);
+      setLoading(false);
     }
-    setLoading(false);
+    rehydrate();
   }, [setStoreUser]);
 
-  function login(email, password) {
-    const user = MOCK_USERS.find(
-      (u) =>
-        u.email.toLowerCase() === email.toLowerCase() &&
-        u.password === password
-    );
-    if (!user) throw new Error("Invalid email or password");
+  async function login(email, password) {
+    if (USE_MOCK) {
+      // Mock: check against hardcoded users
+      const user = MOCK_USERS.find(
+        (u) =>
+          u.email.toLowerCase() === email.toLowerCase() &&
+          u.password === password,
+      );
+      if (!user) throw new Error("Invalid email or password");
 
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+      setCurrentUser(user);
+      setStoreUser(user);
+      return user;
+    }
+
+    // API mode
+    const data = await apiLogin(email, password);
+    const user = data.user;
+    setToken(data.token);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
     setCurrentUser(user);
     setStoreUser(user);
@@ -40,13 +81,21 @@ export function AuthProvider({ children }) {
   }
 
   function logout() {
+    clearToken();
     localStorage.removeItem(STORAGE_KEY);
     setCurrentUser(null);
     setStoreUser(null);
   }
 
-  function signup() {
-    return { success: true };
+  async function signup(name, email, password) {
+    if (USE_MOCK) {
+      return { success: true };
+    }
+
+    // API mode
+    const data = await apiSignup(name, email, password);
+    // Don't auto-login after signup — redirect to login page
+    return data;
   }
 
   return (

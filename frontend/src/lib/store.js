@@ -7,6 +7,18 @@ export const useStore = create((set) => ({
   user: null,
   setUser: (u) => set({ user: u }),
 
+  // ── API-fetched projects (used when USE_MOCK is false) ──
+  projects: [],
+  setProjects: (p) => set({ projects: p }),
+
+  // ── API-fetched join requests ───────────────────────────
+  fetchedJoinRequests: [],
+  setFetchedJoinRequests: (r) => set({ fetchedJoinRequests: r }),
+
+  // ── API-fetched notifications ───────────────────────────
+  fetchedNotifications: [],
+  setFetchedNotifications: (n) => set({ fetchedNotifications: n }),
+
   // ── View mode (persisted to localStorage) ──────────────
   viewMode: savedMode,
   setViewMode: (m) => {
@@ -27,7 +39,7 @@ export const useStore = create((set) => ({
 
   setAllNodes: (projectId, nodes) =>
     set((s) => ({
-      nodesByProject: { ...s.nodesByProject, [projectId]: nodes }
+      nodesByProject: { ...s.nodesByProject, [projectId]: nodes },
     })),
 
   updateNode: (projectId, nodeId, patch) =>
@@ -37,7 +49,7 @@ export const useStore = create((set) => ({
         nodesByProject: {
           ...s.nodesByProject,
           [projectId]: nodes.map((n) =>
-            n.nodeId === nodeId ? { ...n, ...patch } : n
+            n.nodeId === nodeId ? { ...n, ...patch } : n,
           ),
         },
       };
@@ -50,9 +62,9 @@ export const useStore = create((set) => ({
         nodesByProject: {
           ...s.nodesByProject,
           [projectId]: nodes.map((n) =>
-            n.nodeId === nodeId
-              ? { ...n, isBlocked: true, status: "BLOCKED" }
-              : n
+            n.nodeId === nodeId ?
+              { ...n, isBlocked: true, status: "BLOCKED" }
+            : n,
           ),
         },
       };
@@ -145,9 +157,14 @@ export const useStore = create((set) => ({
       const currentProjects = s.userProjects[req.userId] || [];
       return {
         joinRequests: s.joinRequests.map((r) =>
-          r.id === requestId
-            ? { ...r, status: "approved", resolvedAt: new Date().toISOString(), resolvedBy: leadId }
-            : r
+          r.id === requestId ?
+            {
+              ...r,
+              status: "approved",
+              resolvedAt: new Date().toISOString(),
+              resolvedBy: leadId,
+            }
+          : r,
         ),
         userProjects: {
           ...s.userProjects,
@@ -158,9 +175,14 @@ export const useStore = create((set) => ({
   rejectRequest: (requestId, leadId) =>
     set((s) => ({
       joinRequests: s.joinRequests.map((r) =>
-        r.id === requestId
-          ? { ...r, status: "rejected", resolvedAt: new Date().toISOString(), resolvedBy: leadId }
-          : r
+        r.id === requestId ?
+          {
+            ...r,
+            status: "rejected",
+            resolvedAt: new Date().toISOString(),
+            resolvedBy: leadId,
+          }
+        : r,
       ),
     })),
 
@@ -183,14 +205,19 @@ export const useStore = create((set) => ({
   pushNotification: (notif) =>
     set((s) => ({
       notifications: [
-        { ...notif, id: `notif-${Date.now()}`, read: false, createdAt: new Date().toISOString() },
+        {
+          ...notif,
+          id: `notif-${Date.now()}`,
+          read: false,
+          createdAt: new Date().toISOString(),
+        },
         ...s.notifications,
       ].slice(0, 50),
     })),
   markNotificationRead: (id) =>
     set((s) => ({
       notifications: s.notifications.map((n) =>
-        n.id === id ? { ...n, read: true } : n
+        n.id === id ? { ...n, read: true } : n,
       ),
     })),
   markAllRead: () =>
@@ -205,13 +232,13 @@ export const useStore = create((set) => ({
   archiveProject: (id) =>
     set((s) => ({
       extraProjects: s.extraProjects.map((p) =>
-        p.id === id ? { ...p, isActive: false } : p
+        p.id === id ? { ...p, isActive: false } : p,
       ),
     })),
   updateExtraProject: (id, patch) =>
     set((s) => ({
       extraProjects: s.extraProjects.map((p) =>
-        p.id === id ? { ...p, ...patch } : p
+        p.id === id ? { ...p, ...patch } : p,
       ),
     })),
 }));

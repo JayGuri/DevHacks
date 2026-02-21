@@ -1,14 +1,18 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { CheckCircle, XCircle, Inbox } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useAuth } from "@/contexts/AuthContext";
 import { useStore } from "@/lib/store";
 import { MOCK_USERS } from "@/lib/mockData";
+import { USE_MOCK } from "@/lib/config";
 import {
-  getAllProjects,
-  getUserManagedProjects,
-} from "@/lib/projectUtils";
+  apiListJoinRequests,
+  apiApproveJoinRequest,
+  apiRejectJoinRequest,
+  apiListProjects,
+} from "@/lib/api";
+import { getAllProjects, getUserManagedProjects } from "@/lib/projectUtils";
 import AppLayout from "@/components/layout/AppLayout";
 import EmptyState from "@/components/dashboard/EmptyState";
 import ConfirmDialog from "@/components/dashboard/ConfirmDialog";
@@ -16,10 +20,19 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from "@/components/ui/table";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 
 export default function JoinRequests() {
@@ -34,15 +47,29 @@ export default function JoinRequests() {
   const managedProjects = getUserManagedProjects(currentUser?.id, store);
   const managedIds = managedProjects.map((p) => p.id);
 
-  const allRequests = store.joinRequests.filter((r) =>
-    managedIds.includes(r.projectId)
-  );
+  const allRequests =
+    USE_MOCK ?
+      store.joinRequests.filter((r) => managedIds.includes(r.projectId))
+    : store.fetchedJoinRequests.filter((r) => managedIds.includes(r.projectId));
+
+  // Fetch join requests and projects when not using mock
+  useEffect(() => {
+    if (!USE_MOCK) {
+      apiListProjects()
+        .then((data) => store.setProjects(data))
+        .catch(() => {});
+      apiListJoinRequests()
+        .then((data) => store.setFetchedJoinRequests(data))
+        .catch((err) => console.error("Failed to fetch join requests:", err));
+    }
+  }, []);
 
   const [filterProject, setFilterProject] = useState("all");
 
-  const filtered = filterProject === "all"
-    ? allRequests
-    : allRequests.filter((r) => r.projectId === filterProject);
+  const filtered =
+    filterProject === "all" ? allRequests : (
+      allRequests.filter((r) => r.projectId === filterProject)
+    );
 
   const pending = filtered.filter((r) => r.status === "pending");
   const approved = filtered.filter((r) => r.status === "approved");
@@ -58,10 +85,24 @@ export default function JoinRequests() {
 
   function resolverName(uid) {
     if (!uid) return "—";
+    if (!USE_MOCK) return uid; // In API mode we just show the ID (could be enhanced)
     return MOCK_USERS.find((u) => u.id === uid)?.name || uid;
   }
 
-  function handleApprove(req) {
+  async function handleApprove(req) {
+    if (!USE_MOCK) {
+      try {
+        const updated = await apiApproveJoinRequest(req.id);
+        store.setFetchedJoinRequests(
+          store.fetchedJoinRequests.map((r) => (r.id === req.id ? updated : r)),
+        );
+        toast.success(`${req.userName} approved`);
+      } catch (err) {
+        toast.error(err.message || "Failed to approve");
+      }
+      return;
+    }
+    // Mock mode
     approveRequest(req.id, currentUser.id);
     const pName = projectName(req.projectId);
     pushNotification({
@@ -80,7 +121,20 @@ export default function JoinRequests() {
     toast.success(`${req.userName} approved for ${pName}`);
   }
 
-  function handleReject(req) {
+  async function handleReject(req) {
+    if (!USE_MOCK) {
+      try {
+        const updated = await apiRejectJoinRequest(req.id);
+        store.setFetchedJoinRequests(
+          store.fetchedJoinRequests.map((r) => (r.id === req.id ? updated : r)),
+        );
+        toast.info("Request rejected");
+      } catch (err) {
+        toast.error(err.message || "Failed to reject");
+      }
+      return;
+    }
+    // Mock mode
     rejectRequest(req.id, currentUser.id);
     const pName = projectName(req.projectId);
     pushNotification({
@@ -101,7 +155,9 @@ export default function JoinRequests() {
         <SelectContent>
           <SelectItem value="all">All Projects</SelectItem>
           {managedProjects.map((p) => (
-            <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+            <SelectItem key={p.id} value={p.id}>
+              {p.name}
+            </SelectItem>
           ))}
         </SelectContent>
       </Select>
@@ -110,11 +166,13 @@ export default function JoinRequests() {
 
   function visibilityBadge(pid) {
     const vis = projectVisibility(pid);
-    return vis === "private" ? (
-      <Badge variant="outline" className="text-muted-foreground">Private</Badge>
-    ) : (
-      <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">Public</Badge>
-    );
+    return vis === "private" ?
+        <Badge variant="outline" className="text-muted-foreground">
+          Private
+        </Badge>
+      : <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+          Public
+        </Badge>;
   }
 
   return (
@@ -122,17 +180,24 @@ export default function JoinRequests() {
       <Tabs defaultValue="pending">
         <TabsList className="mb-4">
           <TabsTrigger value="pending">Pending ({pending.length})</TabsTrigger>
-          <TabsTrigger value="approved">Approved ({approved.length})</TabsTrigger>
-          <TabsTrigger value="rejected">Rejected ({rejected.length})</TabsTrigger>
+          <TabsTrigger value="approved">
+            Approved ({approved.length})
+          </TabsTrigger>
+          <TabsTrigger value="rejected">
+            Rejected ({rejected.length})
+          </TabsTrigger>
         </TabsList>
 
         {/* Pending */}
         <TabsContent value="pending">
           {filterBar}
-          {pending.length === 0 ? (
-            <EmptyState icon={Inbox} title="No pending requests" description="All caught up." />
-          ) : (
-            <div className="overflow-x-auto rounded-md border border-border">
+          {pending.length === 0 ?
+            <EmptyState
+              icon={Inbox}
+              title="No pending requests"
+              description="All caught up."
+            />
+          : <div className="overflow-x-auto rounded-md border border-border">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -148,12 +213,18 @@ export default function JoinRequests() {
                 <TableBody>
                   {pending.map((req) => (
                     <TableRow key={req.id}>
-                      <TableCell className="font-medium">{req.userName}</TableCell>
-                      <TableCell className="mono-data text-xs">{req.userEmail}</TableCell>
+                      <TableCell className="font-medium">
+                        {req.userName}
+                      </TableCell>
+                      <TableCell className="mono-data text-xs">
+                        {req.userEmail}
+                      </TableCell>
                       <TableCell>{projectName(req.projectId)}</TableCell>
                       <TableCell>{visibilityBadge(req.projectId)}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {formatDistanceToNow(new Date(req.requestedAt), { addSuffix: true })}
+                        {formatDistanceToNow(new Date(req.requestedAt), {
+                          addSuffix: true,
+                        })}
                       </TableCell>
                       <TableCell className="max-w-[200px] truncate text-xs text-muted-foreground">
                         {req.message || "—"}
@@ -162,8 +233,12 @@ export default function JoinRequests() {
                         <div className="flex gap-1">
                           <ConfirmDialog
                             trigger={
-                              <Button size="sm" className="bg-emerald-600 text-white hover:bg-emerald-700">
-                                <CheckCircle size={14} className="mr-1" /> Approve
+                              <Button
+                                size="sm"
+                                className="bg-emerald-600 text-white hover:bg-emerald-700"
+                              >
+                                <CheckCircle size={14} className="mr-1" />{" "}
+                                Approve
                               </Button>
                             }
                             title="Approve Request"
@@ -173,7 +248,11 @@ export default function JoinRequests() {
                           />
                           <ConfirmDialog
                             trigger={
-                              <Button size="sm" variant="ghost" className="text-rose-500 hover:text-rose-600">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-rose-500 hover:text-rose-600"
+                              >
                                 <XCircle size={14} className="mr-1" /> Reject
                               </Button>
                             }
@@ -190,16 +269,19 @@ export default function JoinRequests() {
                 </TableBody>
               </Table>
             </div>
-          )}
+          }
         </TabsContent>
 
         {/* Approved */}
         <TabsContent value="approved">
           {filterBar}
-          {approved.length === 0 ? (
-            <EmptyState icon={Inbox} title="No approved requests" description="Approved requests will appear here." />
-          ) : (
-            <div className="overflow-x-auto rounded-md border border-border">
+          {approved.length === 0 ?
+            <EmptyState
+              icon={Inbox}
+              title="No approved requests"
+              description="Approved requests will appear here."
+            />
+          : <div className="overflow-x-auto rounded-md border border-border">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -215,32 +297,47 @@ export default function JoinRequests() {
                 <TableBody>
                   {approved.map((req) => (
                     <TableRow key={req.id}>
-                      <TableCell className="font-medium">{req.userName}</TableCell>
-                      <TableCell className="mono-data text-xs">{req.userEmail}</TableCell>
+                      <TableCell className="font-medium">
+                        {req.userName}
+                      </TableCell>
+                      <TableCell className="mono-data text-xs">
+                        {req.userEmail}
+                      </TableCell>
                       <TableCell>{projectName(req.projectId)}</TableCell>
                       <TableCell>{visibilityBadge(req.projectId)}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {formatDistanceToNow(new Date(req.requestedAt), { addSuffix: true })}
+                        {formatDistanceToNow(new Date(req.requestedAt), {
+                          addSuffix: true,
+                        })}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {req.resolvedAt ? formatDistanceToNow(new Date(req.resolvedAt), { addSuffix: true }) : "—"}
+                        {req.resolvedAt ?
+                          formatDistanceToNow(new Date(req.resolvedAt), {
+                            addSuffix: true,
+                          })
+                        : "—"}
                       </TableCell>
-                      <TableCell className="text-xs">{resolverName(req.resolvedBy)}</TableCell>
+                      <TableCell className="text-xs">
+                        {resolverName(req.resolvedBy)}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </div>
-          )}
+          }
         </TabsContent>
 
         {/* Rejected */}
         <TabsContent value="rejected">
           {filterBar}
-          {rejected.length === 0 ? (
-            <EmptyState icon={Inbox} title="No rejected requests" description="Rejected requests will appear here." />
-          ) : (
-            <div className="overflow-x-auto rounded-md border border-border">
+          {rejected.length === 0 ?
+            <EmptyState
+              icon={Inbox}
+              title="No rejected requests"
+              description="Rejected requests will appear here."
+            />
+          : <div className="overflow-x-auto rounded-md border border-border">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -256,23 +353,35 @@ export default function JoinRequests() {
                 <TableBody>
                   {rejected.map((req) => (
                     <TableRow key={req.id}>
-                      <TableCell className="font-medium">{req.userName}</TableCell>
-                      <TableCell className="mono-data text-xs">{req.userEmail}</TableCell>
+                      <TableCell className="font-medium">
+                        {req.userName}
+                      </TableCell>
+                      <TableCell className="mono-data text-xs">
+                        {req.userEmail}
+                      </TableCell>
                       <TableCell>{projectName(req.projectId)}</TableCell>
                       <TableCell>{visibilityBadge(req.projectId)}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {formatDistanceToNow(new Date(req.requestedAt), { addSuffix: true })}
+                        {formatDistanceToNow(new Date(req.requestedAt), {
+                          addSuffix: true,
+                        })}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {req.resolvedAt ? formatDistanceToNow(new Date(req.resolvedAt), { addSuffix: true }) : "—"}
+                        {req.resolvedAt ?
+                          formatDistanceToNow(new Date(req.resolvedAt), {
+                            addSuffix: true,
+                          })
+                        : "—"}
                       </TableCell>
-                      <TableCell className="text-xs">{resolverName(req.resolvedBy)}</TableCell>
+                      <TableCell className="text-xs">
+                        {resolverName(req.resolvedBy)}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </div>
-          )}
+          }
         </TabsContent>
       </Tabs>
     </AppLayout>
