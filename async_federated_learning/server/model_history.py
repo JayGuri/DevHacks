@@ -110,6 +110,10 @@ class ModelHistory:
     def __init__(self, initial_models: dict, checkpoint_dir: str = "./results/checkpoints"):
         self.models = {}
         self.checkpoint_dir = checkpoint_dir
+        # Per-client personalized model storage: {client_id: {"weights", "task", "updated_at"}}
+        self._client_models: dict = {}
+        # A/B version tags: {task: {"A": version_hash, "B": version_hash}}
+        self._ab_versions: dict = {}
 
         import os
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -176,6 +180,44 @@ class ModelHistory:
             task, self.models[task]["round"], loss,
             self.models[task]["version"][:8],
         )
+
+    def get_personalized(self, client_id: str, task: str, alpha: float = 0.2) -> dict:
+        """Return a personalized model for a client.
+
+        w_personalized = (1 - alpha) * w_global + alpha * w_local
+
+        Falls back to global model if no local model exists yet for this client.
+        alpha=0 → pure global model; alpha=1 → pure local model.
+        """
+        global_weights = self.models[task]["weights"]
+        local_state = self._client_models.get(client_id)
+        if local_state is None or local_state.get("task") != task:
+            return {k: v.copy() for k, v in global_weights.items()}
+        local_weights = local_state["weights"]
+        return {
+            k: (1.0 - alpha) * global_weights[k] + alpha * local_weights[k]
+            for k in global_weights
+        }
+
+    def update_client_local(self, client_id: str, weight_delta: dict, task: str) -> None:
+        """Store a client's local model (global weights + their update delta)."""
+        if task not in self.models:
+            return
+        global_weights = self.models[task]["weights"]
+        local_weights = {k: global_weights[k] + weight_delta[k] for k in global_weights}
+        self._client_models[client_id] = {
+            "weights": local_weights,
+            "task": task,
+            "updated_at": time.time(),
+        }
+
+    def tag_ab_version(self, task: str, slot: str) -> None:
+        """Tag current model version as 'A' or 'B' for A/B testing."""
+        if task not in self.models:
+            return
+        version = self.models[task]["version"]
+        self._ab_versions.setdefault(task, {})[slot] = version
+        logger.info("Tagged %s-%s as version %s", task, slot, version[:8])
 
     def serialize_weights(self, weights: dict) -> str:
         """numpy arrays -> lists -> msgpack bytes -> base64 string."""

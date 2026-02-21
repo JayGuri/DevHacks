@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.cnn import get_model, VOCAB_SHAKESPEARE
 from privacy.dp import PrivacyEngine
 from attacks.byzantine import MaliciousTrainer
+from data.shakespeare_loader import ShakespearePartitioner
 
 logger = logging.getLogger("fedbuff.client")
 
@@ -36,11 +37,13 @@ logger = logging.getLogger("fedbuff.client")
 class LEAFLoader:
     """Loads LEAF benchmark data (FEMNIST or Shakespeare) with partitioning."""
 
-    def __init__(self, dataset: str, data_partition: int, partition_count: int = 3,
+    def __init__(self, dataset: str, node_index: int, total_nodes: int = 10,
                  batch_size: int = 32):
         self.dataset = dataset
-        self.data_partition = data_partition
-        self.partition_count = partition_count
+        self.data_partition = node_index       # alias for internal use
+        self.partition_count = total_nodes     # alias for internal use
+        self.node_index = node_index
+        self.total_nodes = total_nodes
         self.batch_size = batch_size
 
         # Data directories
@@ -194,25 +197,77 @@ class LEAFLoader:
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
     def _synthetic_dataloader(self) -> DataLoader:
-        """Generate synthetic fallback data for testing without real LEAF data."""
+        """
+        Fallback DataLoader when no LEAF JSON data is available.
+
+        For Shakespeare: tries to load from the raw text file on disk via
+        ShakespearePartitioner (gives real training signal).  Falls back to
+        random tensors only if no text file can be found.
+        For FEMNIST: returns random tensors (development/testing only).
+        """
+        if self.dataset == "shakespeare":
+            return self._real_shakespeare_dataloader()
+
         logger.warning(
             "SYNTHETIC DATA: Generating fallback data for %s (partition %d). "
             "This is for development/testing only.",
             self.dataset, self.data_partition,
         )
+        # FEMNIST: (256, 1, 28, 28) float32, labels [0, 61]
+        x = torch.randn(256, 1, 28, 28, dtype=torch.float32)
+        y = torch.randint(0, 62, (256,), dtype=torch.long)
+        dataset = TensorDataset(x, y)
+        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
-        if self.dataset == "femnist":
-            # FEMNIST: (256, 1, 28, 28) float32, labels [0, 61]
-            x = torch.randn(256, 1, 28, 28, dtype=torch.float32)
-            y = torch.randint(0, 62, (256,), dtype=torch.long)
-        elif self.dataset == "shakespeare":
-            # Shakespeare: (256, 80) long [0, 79] for both x and y
-            x = torch.randint(0, 80, (256, 80), dtype=torch.long)
-            y = torch.randint(0, 80, (256, 80), dtype=torch.long)
-        else:
-            x = torch.randn(256, 1, 28, 28, dtype=torch.float32)
-            y = torch.randint(0, 62, (256,), dtype=torch.long)
+    def _real_shakespeare_dataloader(self) -> DataLoader:
+        """
+        Load Shakespeare data from the raw text file using ShakespearePartitioner.
 
+        Partitions the corpus with Dirichlet(alpha=0.5) into ``partition_count``
+        shards and returns the DataLoader for shard ``data_partition``.
+        Falls back to random tensors if no text file is found.
+        """
+        try:
+            partitioner = ShakespearePartitioner(seq_length=80)
+            text = partitioner.load_dataset()  # auto-finds data/raw/*.txt
+            _, _, vocab_size = partitioner.build_vocabulary(text)
+
+            # Use a fixed seed so all clients get consistent, non-overlapping shards
+            shards = partitioner.partition_data(
+                text, self.partition_count, alpha=0.5, seed=42
+            )
+            idx = min(self.data_partition, len(shards) - 1)
+            shard = shards[idx]
+
+            dataloader = partitioner.get_client_dataloader(
+                shard, batch_size=self.batch_size
+            )
+            logger.info(
+                "Shakespeare real data loaded: partition=%d, shard_len=%d chars, "
+                "vocab_size=%d, batches=%d",
+                self.data_partition, len(shard), vocab_size, len(dataloader),
+            )
+            return dataloader
+
+        except FileNotFoundError as exc:
+            logger.warning(
+                "Shakespeare text file not found (%s). "
+                "Falling back to random synthetic tensors.",
+                exc,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to load real Shakespeare data (%s). "
+                "Falling back to random synthetic tensors.",
+                exc,
+            )
+
+        logger.warning(
+            "SYNTHETIC DATA: Generating random fallback for shakespeare (partition %d).",
+            self.data_partition,
+        )
+        x = torch.randint(0, 80, (256, 80), dtype=torch.long)
+        y = torch.randint(0, 80, (256, 80), dtype=torch.long)
         dataset = TensorDataset(x, y)
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
@@ -499,7 +554,8 @@ async def main():
     server_url = os.environ.get("SERVER_URL", "ws://localhost:8765/ws/fl")
     auth_token = os.environ.get("AUTH_TOKEN", "")
     dataset = os.environ.get("DATASET", "femnist")
-    data_partition = int(os.environ.get("DATA_PARTITION", "0"))
+    data_partition = int(os.environ.get("NODE_INDEX", os.environ.get("DATA_PARTITION", "0")))
+    total_nodes = int(os.environ.get("TOTAL_NODES", "10"))
     local_epochs = int(os.environ.get("LOCAL_EPOCHS", "5"))
     learning_rate = float(os.environ.get("LEARNING_RATE", "0.01"))
     mu = float(os.environ.get("MU", "0.01"))
@@ -523,12 +579,12 @@ async def main():
     )
 
     logger.info(
-        "Starting FL client: id=%s, role=%s, dataset=%s, partition=%d",
-        client_id, client_role, dataset, data_partition,
+        "Starting FL client: id=%s, role=%s, dataset=%s, node_index=%d/%d",
+        client_id, client_role, dataset, data_partition, total_nodes,
     )
 
     # Step 1: Load data
-    leaf_loader = LEAFLoader(dataset, data_partition, partition_count=3, batch_size=32)
+    leaf_loader = LEAFLoader(dataset, node_index=data_partition, total_nodes=total_nodes, batch_size=32)
     data_loader = leaf_loader.get_dataloader()
 
     # Step 2: Create model
@@ -554,7 +610,16 @@ async def main():
     async def on_global_model(data: dict):
         nonlocal current_global_weights, current_global_round
         weights_b64 = data.get("weights", "")
-        current_global_weights = deserialize_weights(weights_b64)
+        new_global = deserialize_weights(weights_b64)
+        alpha = data.get("personalization_alpha", 0.0)
+        if alpha > 0.0 and current_global_weights:
+            # Personalized blend: keep some local knowledge from previous round
+            current_global_weights = {
+                k: (1.0 - alpha) * new_global[k] + alpha * current_global_weights.get(k, new_global[k])
+                for k in new_global
+            }
+        else:
+            current_global_weights = new_global
         current_global_round = data.get("round_num", 0)
         new_model_event.set()
 

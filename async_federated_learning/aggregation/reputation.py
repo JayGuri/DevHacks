@@ -15,16 +15,25 @@ from aggregation.trimmed_mean import trimmed_mean
 logger = logging.getLogger(__name__)
 
 
-def reputation_aggregated(updates: list, weights: list = None) -> dict:
-    """Reputation-weighted aggregation with trimmed-mean fallback.
+def reputation_aggregated(
+    updates: list,
+    weights: list = None,
+    staleness_weights: list = None,
+    rep_blend: float = 0.5,
+) -> dict:
+    """Reputation-weighted aggregation with optional staleness blending.
 
-    Case 1 — weights is None or all equal: falls back to trimmed_mean(beta=0.1).
-    Case 2 — weights contain variation: weighted average with normalised weights.
+    Case 1 — staleness_weights provided: combines staleness decay and reputation
+              via geometric mean blend, then does a weighted average.
+    Case 2 — weights is None or all equal: falls back to trimmed_mean(beta=0.1).
+    Case 3 — weights contain variation: weighted average with normalised weights.
 
     Parameters
     ----------
-    updates : list[dict[str, np.ndarray]] — per-client weight deltas
-    weights : list[float] | None — per-client reputation scores (higher = more trusted)
+    updates           : list[dict[str, np.ndarray]] — per-client weight deltas
+    weights           : list[float] | None — reputation scores (higher = more trusted)
+    staleness_weights : list[float] | None — staleness decay weights from staleness.py
+    rep_blend         : float in [0, 1] — 0=pure staleness, 1=pure reputation
 
     Returns
     -------
@@ -32,6 +41,31 @@ def reputation_aggregated(updates: list, weights: list = None) -> dict:
     """
     if not updates:
         raise ValueError("reputation_aggregated: 'updates' list is empty.")
+
+    n = len(updates)
+
+    # When staleness weights are provided, blend them with reputation scores
+    if staleness_weights is not None and len(staleness_weights) == n:
+        from aggregation.staleness import combine_trust_weights
+        sample_counts = [
+            u.get("num_samples", 1) if isinstance(u, dict) else 1
+            for u in updates
+        ]
+        rep_ws = weights if weights is not None else [1.0 / n] * n
+        combined = combine_trust_weights(staleness_weights, rep_ws, sample_counts, rep_blend)
+        total = sum(combined)
+        if total <= 0:
+            logger.debug("reputation_aggregated (staleness blend) — weights sum to zero; falling back to trimmed_mean.")
+            return trimmed_mean(updates, beta=0.1)
+        norm_weights = [w / total for w in combined]
+        result = {}
+        for key in updates[0].keys():
+            result[key] = sum(float(norm_weights[i]) * updates[i][key] for i in range(n))
+        logger.debug(
+            "reputation_aggregated (staleness blend) — %d clients, rep_blend=%.2f",
+            n, rep_blend,
+        )
+        return result
 
     n = len(updates)
 
