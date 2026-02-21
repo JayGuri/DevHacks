@@ -34,6 +34,7 @@ import ConvergenceChart from "@/components/fl/ConvergenceChart";
 import SABDPanel from "@/components/fl/SABDPanel";
 import GanttTimeline from "@/components/fl/GanttTimeline";
 import PrivacyGauge from "@/components/fl/PrivacyGauge";
+import NetworkTopology from "@/components/fl/NetworkTopology";
 import PageSkeleton from "@/components/dashboard/PageSkeleton";
 import { fadeIn } from "@/lib/animations";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -310,55 +311,74 @@ export default function AdminProjectDetail() {
           >
             {/* Server View */}
             {defaultTab === "server" && (
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-sm">Convergence</CardTitle>
-                  </CardHeader>
-                  <CardContent className="h-64 min-h-[200px] min-w-0">
-                    <ConvergenceChart
-                      rounds={fl.allRounds}
-                      viewMode={viewMode}
-                    />
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-sm">Timeline</CardTitle>
-                  </CardHeader>
-                  <CardContent className="h-48 min-h-[200px] min-w-0">
-                    <GanttTimeline
-                      ganttBlocks={fl.ganttBlocks}
-                      aggTriggerTimes={fl.aggTriggerTimes}
-                      nodes={fl.nodes}
-                      viewMode={viewMode}
-                    />
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-sm">SABD</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <SABDPanel
-                      latestRound={fl.latestRound}
-                      allRounds={fl.allRounds}
-                      sabdAlpha={config.sabdAlpha}
-                      viewMode={viewMode}
-                      nodes={fl.nodes}
-                    />
-                  </CardContent>
-                </Card>
-                <div className="space-y-4">
+              <div className="space-y-6">
+                <div className="mb-6">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h2 className="font-display text-xl">Network Topology</h2>
+                      <p className="text-xs text-muted-foreground font-mono mt-0.5">
+                        Live 3D view — drag to orbit · scroll to zoom · hover
+                        nodes for details
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="font-mono text-xs">
+                      {fl.nodes.filter((n) => !n.isBlocked).length} active nodes
+                    </Badge>
+                  </div>
+                  <div className="rounded-xl overflow-hidden border border-border">
+                    <NetworkTopology projectId={id} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                   <Card>
-                    <CardContent className="p-4">
-                      <PrivacyGauge
-                        latestRound={fl.latestRound}
+                    <CardHeader>
+                      <CardTitle className="text-sm">Convergence</CardTitle>
+                    </CardHeader>
+                    <CardContent className="h-64 min-h-[200px] min-w-0">
+                      <ConvergenceChart
+                        rounds={fl.allRounds}
                         viewMode={viewMode}
                       />
                     </CardContent>
                   </Card>
-                  {amLead && <ControlPanel fl={fl} projectId={id} />}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm">Timeline</CardTitle>
+                    </CardHeader>
+                    <CardContent className="h-48 min-h-[200px] min-w-0">
+                      <GanttTimeline
+                        ganttBlocks={fl.ganttBlocks}
+                        aggTriggerTimes={fl.aggTriggerTimes}
+                        nodes={fl.nodes}
+                        viewMode={viewMode}
+                      />
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm">SABD</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <SABDPanel
+                        latestRound={fl.latestRound}
+                        allRounds={fl.allRounds}
+                        sabdAlpha={config.sabdAlpha}
+                        viewMode={viewMode}
+                        nodes={fl.nodes}
+                      />
+                    </CardContent>
+                  </Card>
+                  <div className="space-y-4">
+                    <Card>
+                      <CardContent className="p-4">
+                        <PrivacyGauge
+                          latestRound={fl.latestRound}
+                          viewMode={viewMode}
+                        />
+                      </CardContent>
+                    </Card>
+                    {amLead && <ControlPanel fl={fl} projectId={id} />}
+                  </div>
                 </div>
               </div>
             )}
