@@ -274,7 +274,20 @@ class AsyncFLServer:
 
         # ── Step 5: aggregate ───────────────────────────────────────────
         deltas = [u.weight_delta for u, _ in valid]
-        aggregated_delta = self.aggregation_fn(deltas, weights=norm_weights)
+        try:
+            aggregated_delta = self.aggregation_fn(deltas, weights=norm_weights)
+        except ValueError as exc:
+            # trimmed_mean raises ValueError when 2k >= n (too few survivors).
+            # Fall back to unweighted mean so training continues.
+            logger.warning(
+                "Aggregation '%s' failed with %d valid updates: %s. "
+                "Falling back to unweighted mean.",
+                self.config.aggregation_method, len(deltas), exc,
+            )
+            keys = list(deltas[0].keys())
+            aggregated_delta = {
+                k: np.mean([d[k] for d in deltas], axis=0) for k in keys
+            }
 
         # ── Step 6: apply ───────────────────────────────────────────────
         self._apply_delta(aggregated_delta)
@@ -307,11 +320,11 @@ class AsyncFLServer:
                 for k in current
             }
             self.model.set_weights(updated)
-            # Record *after* update so history[global_round] = post-aggregation model
-            self.model_history.record(self.global_round, updated)
+            # History recording is done at the START of run_round (before training)
+            # so SABD can look up the version clients trained on.  No record here.
 
         logger.debug(
-            "_apply_delta — round %d model updated and recorded in history.",
+            "_apply_delta — round %d model updated and applied.",
             self.global_round,
         )
 
@@ -345,6 +358,17 @@ class AsyncFLServer:
 
         # ── Step 2: broadcast ───────────────────────────────────────────
         global_weights = self.get_global_weights()
+
+        # Record the model that clients will train on under version global_round.
+        # SABDCorrector.correct() looks up update.round_number in the history to
+        # compute drift Δ_{s→t}.  Recording HERE (before training) means version r
+        # = θ_r = the weights clients received this round, so:
+        #   - staleness-0 clients: drift = θ_r − θ_r = 0  (no correction, correct)
+        #   - stale clients (round_number = r−d): drift = θ_r − θ_{r−d}  (correct)
+        # If we recorded AFTER aggregation instead, clients' round_number r would
+        # not be in the buffer yet when score_update() is called, causing warnings.
+        self.model_history.record(self.global_round, global_weights)
+
         for client in clients:
             client.receive_global_model(global_weights, self.global_round)
 

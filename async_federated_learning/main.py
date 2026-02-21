@@ -6,16 +6,16 @@ Entry point for the Async Robust Federated Learning (ARFL) framework.
 Usage examples
 --------------
 # Run full 4-experiment comparison suite (default MNIST, 50 rounds)
-    python -m async_federated_learning.main
+    python async_federated_learning/main.py
 
 # Quick smoke test (3 clients, 2 rounds — verifies all imports and plumbing)
-    python -m async_federated_learning.main --smoke_test
+    python async_federated_learning/main.py --smoke_test
 
 # Verify all module imports without running training
-    python -m async_federated_learning.main --check
+    python async_federated_learning/main.py --check
 
 # CIFAR-10, more clients, coordinate-median aggregation, no DP
-    python -m async_federated_learning.main \\
+    python async_federated_learning/main.py \\
         --dataset CIFAR10 --in_channels 3 --num_clients 20 \\
         --aggregation coordinate_median --no_dp
 
@@ -26,6 +26,20 @@ E2: FedAvg  — 20% Byzantine sign-flip  (shows vulnerability)
 E3: Trimmed Mean  — 20% Byzantine  (robust aggregation)
 E4: Coordinate Median — 20% Byzantine  (robust aggregation)
 """
+
+# ---------------------------------------------------------------------------
+# Path bootstrap — must happen BEFORE any async_federated_learning imports.
+# Adds the repo root (parent of this package directory) to sys.path so that
+# `from async_federated_learning.xxx import yyy` works whether this file is
+# executed directly (`python async_federated_learning/main.py`) or as a
+# module (`python -m async_federated_learning.main`).
+# ---------------------------------------------------------------------------
+import os as _os
+import sys as _sys
+
+_PKG_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _PKG_ROOT not in _sys.path:
+    _sys.path.insert(0, _PKG_ROOT)
 
 import logging
 
