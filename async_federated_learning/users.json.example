@@ -1,0 +1,29 @@
+{
+  "jwt_secret": "REPLACE_WITH_YOUR_SECRET — generate one with: python -c \"import secrets; print(secrets.token_hex(32))\"",
+  "users": {
+    "client-alice-img": {
+      "display_name": "Alice_Image",
+      "role": "legitimate_client",
+      "task": "femnist",
+      "participant": "Alice"
+    },
+    "client-bob-img": {
+      "display_name": "Bob_Image",
+      "role": "legitimate_client",
+      "task": "femnist",
+      "participant": "Bob"
+    },
+    "client-mallory-img": {
+      "display_name": "Mallory_Image",
+      "role": "malicious_client",
+      "task": "femnist",
+      "participant": "Mallory"
+    },
+    "server-admin": {
+      "display_name": "Server Admin",
+      "role": "server",
+      "task": null,
+      "participant": "Admin"
+    }
+  }
+}
