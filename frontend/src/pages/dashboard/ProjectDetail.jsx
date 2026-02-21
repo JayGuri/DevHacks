@@ -1,7 +1,8 @@
 import { useState, useMemo } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
+import { Cpu, Globe, LockKeyhole } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useStore } from "@/lib/store";
 import useFL from "@/hooks/useFL";
@@ -32,11 +33,24 @@ import {
 } from "@/components/ui/select";
 import {
   Shield, Clock, Activity, Hash, Gauge, Layers,
-  CheckCircle, XCircle, Inbox, Trash2,
+  CheckCircle, XCircle,
 } from "lucide-react";
+
+const SESSION_KEY = (id) => `tab-${id}-project-detail`;
+const VALID_TABS = ["mynode", "server", "admin"];
+
+function getInitialTab(id, amLead) {
+  // 1. Check URL param
+  // (handled in parent via searchParams)
+  // 2. Fall back to sessionStorage
+  const saved = sessionStorage.getItem(SESSION_KEY(id));
+  if (saved && VALID_TABS.includes(saved)) return saved;
+  return "mynode";
+}
 
 export default function ProjectDetail() {
   const { id } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { currentUser } = useAuth();
   const store = useStore();
   const viewMode = store.viewMode;
@@ -45,9 +59,21 @@ export default function ProjectDetail() {
 
   const amLead = isProjectLead(currentUser?.id, id, store);
 
+  // Determine active tab: URL > sessionStorage > default
+  const urlTab = searchParams.get("tab");
+  const savedTab = sessionStorage.getItem(SESSION_KEY(id));
+  const defaultTab =
+    (urlTab && VALID_TABS.includes(urlTab) ? urlTab : null) ||
+    (savedTab && VALID_TABS.includes(savedTab) ? savedTab : "mynode");
+
+  function handleTabChange(value) {
+    sessionStorage.setItem(SESSION_KEY(id), value);
+    setSearchParams({ tab: value }, { replace: true });
+  }
+
   if (!fl.project) {
     return (
-      <AppLayout title="Project">
+      <AppLayout>
         <EmptyState message="Project not found." />
         <Link to="/dashboard/projects" className="mt-4 block text-center text-sm text-primary hover:underline">
           Back to projects
@@ -59,7 +85,7 @@ export default function ProjectDetail() {
   const isMember = fl.project.members.some((m) => m.userId === currentUser?.id);
   if (!isMember) {
     return (
-      <AppLayout title={fl.project.name}>
+      <AppLayout>
         <EmptyState message="You are not a member of this project." />
         <Link to="/dashboard/projects" className="mt-4 block text-center text-sm text-primary hover:underline">
           Browse projects
@@ -74,15 +100,34 @@ export default function ProjectDetail() {
       ? fl.nodes.reduce((s, n) => s + n.trust, 0) / fl.nodes.length
       : 0;
 
+  const isPrivate = fl.project.visibility === "private";
+  const visibilityBadge = isPrivate ? (
+    <Badge variant="outline" className="text-xs text-muted-foreground">
+      <LockKeyhole size={10} className="mr-1" />Private
+    </Badge>
+  ) : (
+    <Badge className="bg-emerald-500/10 text-xs text-emerald-600 dark:text-emerald-400">
+      <Globe size={10} className="mr-1" />Public
+    </Badge>
+  );
+
+  const config = fl.project.config;
+  const subtitleParts = [
+    config.numClients && `${config.numClients} clients`,
+    config.aggregationMethod && config.aggregationMethod.replace(/_/g, " "),
+    config.attackType && config.attackType.replace(/_/g, " "),
+  ].filter(Boolean);
+
   return (
     <AppLayout
-      title={fl.project.name}
-      breadcrumbs={[
-        { label: "Projects", href: "/dashboard/projects" },
-        { label: fl.project.name },
-      ]}
+      pageHeader={{
+        title: fl.project.name,
+        subtitle: subtitleParts.join(" · "),
+        icon: <Cpu size={18} />,
+        badge: visibilityBadge,
+      }}
     >
-      <Tabs defaultValue="mynode">
+      <Tabs value={defaultTab} onValueChange={handleTabChange}>
         <TabsList className="mb-4">
           <TabsTrigger value="mynode">My Node</TabsTrigger>
           <TabsTrigger value="server">Server Metrics</TabsTrigger>

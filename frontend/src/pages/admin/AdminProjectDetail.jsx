@@ -1,9 +1,9 @@
 import { useState, useMemo } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   AlertTriangle, Mail, Trash2, Copy, RefreshCw,
-  Globe, LockKeyhole, Crown,
+  Globe, LockKeyhole, Crown, Server,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useStore } from "@/lib/store";
@@ -35,8 +35,12 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 
+const SESSION_KEY = (id) => `tab-${id}-admin-detail`;
+const VALID_TABS = ["server", "nodes", "members", "config"];
+
 export default function AdminProjectDetail() {
   const { id } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { currentUser } = useAuth();
   const store = useStore();
   const fl = useFL(id);
@@ -50,9 +54,21 @@ export default function AdminProjectDetail() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [transferTarget, setTransferTarget] = useState(null);
 
+  // Determine active tab: URL > sessionStorage > default
+  const urlTab = searchParams.get("tab");
+  const savedTab = sessionStorage.getItem(SESSION_KEY(id));
+  const defaultTab =
+    (urlTab && VALID_TABS.includes(urlTab) ? urlTab : null) ||
+    (savedTab && VALID_TABS.includes(savedTab) ? savedTab : "server");
+
+  function handleTabChange(value) {
+    sessionStorage.setItem(SESSION_KEY(id), value);
+    setSearchParams({ tab: value }, { replace: true });
+  }
+
   if (!fl.project) {
     return (
-      <AppLayout title="Project Detail">
+      <AppLayout>
         <EmptyState message="Project not found." />
         <Link to="/admin/projects" className="mt-4 block text-center text-primary hover:underline">
           ← Back to projects
@@ -167,15 +183,32 @@ export default function AdminProjectDetail() {
   const currentInviteCode = project.inviteCode;
   const isPrivate = project.visibility === "private";
 
+  const visibilityBadge = isPrivate ? (
+    <Badge variant="outline" className="text-xs text-muted-foreground">
+      <LockKeyhole size={10} className="mr-1" />Private
+    </Badge>
+  ) : (
+    <Badge className="bg-emerald-500/10 text-xs text-emerald-600 dark:text-emerald-400">
+      <Globe size={10} className="mr-1" />Public
+    </Badge>
+  );
+
+  const subtitleParts = [
+    config.numClients && `${config.numClients} clients`,
+    config.aggregationMethod && config.aggregationMethod.replace(/_/g, " "),
+    config.attackType && config.attackType.replace(/_/g, " "),
+  ].filter(Boolean);
+
   return (
     <AppLayout
-      title={`${fl.project.name} — Admin`}
-      breadcrumbs={[
-        { label: "All Projects", href: "/admin/projects" },
-        { label: fl.project.name },
-      ]}
+      pageHeader={{
+        title: fl.project.name,
+        subtitle: subtitleParts.join(" · "),
+        icon: <Server size={18} />,
+        badge: visibilityBadge,
+      }}
     >
-      <Tabs defaultValue="server">
+      <Tabs value={defaultTab} onValueChange={handleTabChange}>
         <TabsList className="mb-4">
           <TabsTrigger value="server">Server View</TabsTrigger>
           <TabsTrigger value="nodes">Nodes</TabsTrigger>
@@ -402,7 +435,7 @@ export default function AdminProjectDetail() {
                         <Button size="sm" variant="ghost"><RefreshCw size={12} className="mr-1" /> Regenerate</Button>
                       }
                       title="Regenerate Invite Code"
-                      description="The old code will stop working immediately. Anyone who hasn't used it yet will need the new code."
+                      description="The old code will stop working immediately."
                       confirmLabel="Regenerate"
                       destructive
                       onConfirm={handleRegenerateCode}
@@ -430,7 +463,7 @@ export default function AdminProjectDetail() {
                     <ConfirmDialog
                       trigger={<Button size="sm" variant="outline"><Globe size={12} className="mr-1" /> Make Public</Button>}
                       title="Make Project Public"
-                      description="Anyone will be able to browse and request to join this project. The invite code will no longer be required."
+                      description="Anyone will be able to browse and request to join this project."
                       confirmLabel="Make Public"
                       onConfirm={() => {
                         store.updateExtraProject(id, { visibility: "public", inviteCode: null });

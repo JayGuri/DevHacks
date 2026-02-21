@@ -3,6 +3,7 @@ import { useTheme } from "next-themes";
 import {
   Sun, Moon, ChevronRight, LogOut, Bell,
   UserPlus, CheckCircle, XCircle, AlertTriangle, Settings,
+  Home, Command,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useAuth } from "@/contexts/AuthContext";
@@ -30,7 +31,7 @@ const NOTIF_ICONS = {
   config: Settings,
 };
 
-export default function TopNav({ title, breadcrumbs }) {
+export default function TopNav({ breadcrumbs = [] }) {
   const { currentUser, logout } = useAuth();
   const { theme, setTheme } = useTheme();
   const navigate = useNavigate();
@@ -65,28 +66,48 @@ export default function TopNav({ title, breadcrumbs }) {
 
   return (
     <header className="fixed left-0 right-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-background/95 px-4 backdrop-blur-sm lg:left-60 lg:px-6">
-      {/* Left: title + breadcrumbs */}
-      <div className="flex items-center gap-2">
-        {breadcrumbs ? (
-          <nav className="flex items-center gap-1 text-sm">
-            {breadcrumbs.map((crumb, i) => (
-              <span key={i} className="flex items-center gap-1">
-                {i > 0 && <ChevronRight size={14} className="text-muted-foreground" />}
-                {crumb.href ? (
-                  <Link to={crumb.href} className="text-muted-foreground hover:text-foreground">{crumb.label}</Link>
-                ) : (
-                  <span className="font-medium text-foreground">{crumb.label}</span>
-                )}
-              </span>
-            ))}
-          </nav>
-        ) : (
-          <h1 className="font-display text-xl">{title}</h1>
-        )}
-      </div>
+      {/* Left: breadcrumbs with Home icon */}
+      <nav className="flex items-center gap-1 text-sm min-w-0">
+        <Link
+          to="/dashboard/overview"
+          className="flex shrink-0 items-center text-muted-foreground transition-colors hover:text-foreground"
+          title="Home"
+        >
+          <Home size={14} />
+        </Link>
 
-      {/* Right: view toggle, notifications, theme, avatar */}
-      <div className="flex items-center gap-2">
+        {breadcrumbs.map((crumb, i) => (
+          <span key={i} className="flex items-center gap-1 min-w-0">
+            <ChevronRight size={13} className="shrink-0 text-muted-foreground/50" />
+            {crumb.href ? (
+              <Link
+                to={crumb.href}
+                className="truncate text-muted-foreground transition-colors hover:text-foreground"
+              >
+                {crumb.label}
+              </Link>
+            ) : (
+              <span className="truncate font-medium text-foreground">
+                {crumb.label}
+              </span>
+            )}
+          </span>
+        ))}
+      </nav>
+
+      {/* Right: Ctrl+K hint, view toggle, notifications, theme, avatar */}
+      <div className="flex shrink-0 items-center gap-1.5">
+
+        {/* Ctrl+K hint */}
+        <button
+          className="hidden items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50 sm:flex"
+          onClick={() => document.dispatchEvent(new CustomEvent("open-command-palette"))}
+          title="Open command palette"
+        >
+          <Command size={11} />
+          <span>K</span>
+        </button>
+
         <ViewToggle />
 
         {/* Notification bell */}
