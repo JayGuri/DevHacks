@@ -1,309 +1,666 @@
-"""
-client/fl_client.py
-===================
-Federated learning client: trains locally on private data, returns weight delta.
-
-Design notes
-------------
-Byzantine behaviour is injected *after* DP to model a compromised device that
-runs differential privacy correctly but then corrupts the clipped-and-noised
-result before transmission.  This preserves the DP guarantee for honest
-clients (the mechanism itself is uncompromised) while still modelling a
-realistic threat: a device whose OS/firmware is compromised *after* the local
-DP step.
-
-The ``is_byzantine`` field in ``ClientUpdate`` is for evaluation logging only.
-The server NEVER reads or branches on it — doing so would be oracle cheating.
-
-Staleness mechanism
--------------------
-``receive_global_model`` stores the round number at which the client received
-the model (``self.current_round``).  ``ClientUpdate.round_number`` is set to
-this value.  The server computes staleness as::
-
-    staleness = global_round − update.round_number
-
-Slow clients (``is_fast_client=False``) sleep 1–3 s versus 0–0.5 s for fast
-clients, simulating the straggler problem that is the root cause of staleness
-in async FL.
-"""
-
-import logging
+# client/fl_client.py — Full client: FL loop, trainer, PrivacyEngine calls, WSClient
+import os
+import sys
+import json
+import glob
+import asyncio
+import argparse
 import random
 import time
-from dataclasses import dataclass
-from typing import Optional
+import base64
+import logging
+from datetime import datetime, timezone
 
+import numpy as np
 import torch
-import torch.nn
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 
-from async_federated_learning.attacks.byzantine import apply_attack
-from async_federated_learning.config import Config
-from async_federated_learning.models.cnn import FLModel
-from async_federated_learning.privacy.dp import DifferentialPrivacyMechanism
+import msgpack
+from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from models.cnn import get_model, VOCAB_SHAKESPEARE
+from privacy.dp import PrivacyEngine
+from attacks.byzantine import MaliciousTrainer
 
-# ---------------------------------------------------------------------------
-# Data transfer object returned by every local_train() call
-# ---------------------------------------------------------------------------
+logger = logging.getLogger("fedbuff.client")
 
-@dataclass
-class ClientUpdate:
-    """
-    Immutable container for one client's training result.
-
-    Fields
-    ------
-    client_id    : int    Unique identifier for the client.
-    weight_delta : dict   ``{param_name: np.ndarray}`` — θ_local − θ_start.
-    round_number : int    Global round at which the client *started* training.
-                          Used by the server to compute staleness.
-    num_samples  : int    Local dataset size; used as aggregation weight.
-    training_loss: float  Final mini-batch loss of the last local epoch.
-    is_byzantine : bool   Ground-truth label — for evaluation/logging ONLY.
-                          The server MUST NOT use this field in any decision.
-    staleness    : int    Filled in by the server after receipt (defaults 0).
-    """
-
-    client_id: int
-    weight_delta: dict          # {param_name: numpy_array}
-    round_number: int           # which global round this update is based on
-    num_samples: int            # local dataset size (aggregation weight)
-    training_loss: float
-    is_byzantine: bool          # for evaluation ONLY — server never reads this
-    staleness: int = 0          # set by server after receipt
+# ============================================================================
+# Data Loading — LEAF format
+# ============================================================================
 
 
-# ---------------------------------------------------------------------------
-# FL Client
-# ---------------------------------------------------------------------------
+class LEAFLoader:
+    """Loads LEAF benchmark data (FEMNIST or Shakespeare) with partitioning."""
 
-class FLClient:
-    """
-    Federated learning client.
+    def __init__(self, dataset: str, data_partition: int, partition_count: int = 3,
+                 batch_size: int = 32):
+        self.dataset = dataset
+        self.data_partition = data_partition
+        self.partition_count = partition_count
+        self.batch_size = batch_size
 
-    Responsibilities
-    ----------------
-    - Receive the current global model from the server (``receive_global_model``).
-    - Run E local SGD epochs on the private data shard (``local_train``).
-    - Apply DP clipping + noise if ``config.use_dp`` is True.
-    - Inject a Byzantine attack *after* DP if the client is malicious.
-    - Simulate network delay to model asynchronous arrival patterns.
-
-    Thread safety
-    -------------
-    Each ``FLClient`` instance is used by exactly one thread (one client task
-    per round).  No shared state between clients; no locking required here.
-
-    Parameters
-    ----------
-    client_id   : int           Unique client identifier.
-    dataloader  : DataLoader    Private data shard for this client.
-    config      : Config        Global experiment configuration.
-    is_byzantine: bool          Whether this client behaves adversarially.
-    attack_type : str           Attack name (passed to ``apply_attack``).
-                                Ignored when ``is_byzantine=False``.
-    """
-
-    def __init__(
-        self,
-        client_id: int,
-        dataloader,
-        config: Config,
-        is_byzantine: bool = False,
-        attack_type: str = "sign_flipping",
-    ):
-        self.client_id = client_id
-        self.dataloader = dataloader
-        self.config = config
-        self.is_byzantine = is_byzantine
-        self.attack_type = attack_type
-        self.current_round = 0
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.model = FLModel(
-            config.in_channels, config.num_classes, config.hidden_dim
-        ).to(self.device)
-
-        # DP mechanism — None when use_dp=False (honest-only baseline)
-        self.dp_mechanism: Optional[DifferentialPrivacyMechanism] = (
-            DifferentialPrivacyMechanism(
-                config.dp_noise_multiplier, config.dp_clip_norm
-            )
-            if config.use_dp
-            else None
+        # Data directories
+        base_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "data", dataset, "data",
         )
+        self.train_dir = os.path.join(base_dir, "train")
+        self.test_dir = os.path.join(base_dir, "test")
 
-        # Straggler model: 70 % fast clients, 30 % slow
-        self.is_fast_client: bool = random.random() > 0.3
+    def _load_all_shards(self, split_dir: str) -> dict:
+        """Glob all *.json shards, sort filenames, merge users and user_data."""
+        if not os.path.exists(split_dir):
+            logger.warning("Data directory not found: %s", split_dir)
+            return {"users": [], "user_data": {}}
 
-        # Convenience: store once (dataset size is fixed)
-        self.num_samples: int = len(dataloader.dataset)
+        shard_files = sorted(glob.glob(os.path.join(split_dir, "*.json")))
+        if not shard_files:
+            logger.warning("No JSON shard files found in %s", split_dir)
+            return {"users": [], "user_data": {}}
 
+        all_users = []
+        all_user_data = {}
+
+        for shard_path in shard_files:
+            try:
+                with open(shard_path, "r") as f:
+                    shard = json.load(f)
+                users = shard.get("users", [])
+                user_data = shard.get("user_data", {})
+                all_users.extend(users)
+                all_user_data.update(user_data)
+            except Exception as e:
+                logger.warning("Failed to load shard %s: %s", shard_path, e)
+
+        logger.info("Loaded %d users from %s", len(all_users), split_dir)
+        return {"users": all_users, "user_data": all_user_data}
+
+    def _get_partition_users(self, all_users: list) -> list:
+        """Divide users into partition_count chunks; return chunk[partition]."""
+        if not all_users:
+            return []
+
+        # Sort for deterministic partitioning
+        sorted_users = sorted(all_users)
+        chunk_size = max(len(sorted_users) // self.partition_count, 1)
+        start = self.data_partition * chunk_size
+        end = start + chunk_size if self.data_partition < self.partition_count - 1 else len(sorted_users)
+        partition_users = sorted_users[start:end]
         logger.info(
-            "FLClient %d — byzantine=%s, attack=%s, fast=%s, "
-            "samples=%d, dp=%s, device=%s.",
-            client_id,
-            is_byzantine,
-            attack_type if is_byzantine else "N/A",
-            self.is_fast_client,
-            self.num_samples,
-            "on" if self.dp_mechanism is not None else "off",
-            self.device,
+            "Partition %d/%d: %d users (indices %d-%d of %d total)",
+            self.data_partition, self.partition_count,
+            len(partition_users), start, end - 1, len(sorted_users),
+        )
+        return partition_users
+
+    def _prepare_femnist(self, user_data: dict, users: list) -> tuple:
+        """Prepare FEMNIST data as tensors."""
+        all_x = []
+        all_y = []
+
+        for user in users:
+            if user not in user_data:
+                continue
+            ud = user_data[user]
+            x_data = ud.get("x", [])
+            y_data = ud.get("y", [])
+
+            for x_sample, y_sample in zip(x_data, y_data):
+                # x: list of 784 floats -> reshape to (1, 28, 28)
+                img = np.array(x_sample, dtype=np.float32).reshape(1, 28, 28)
+                all_x.append(img)
+                all_y.append(int(y_sample))
+
+        if not all_x:
+            return None, None
+
+        x_tensor = torch.tensor(np.array(all_x), dtype=torch.float32)
+        y_tensor = torch.tensor(np.array(all_y), dtype=torch.long)
+        return x_tensor, y_tensor
+
+    def _prepare_shakespeare(self, user_data: dict, users: list) -> tuple:
+        """Prepare Shakespeare data as tensors."""
+        all_x = []
+        all_y = []
+
+        char_to_idx = {ch: i for i, ch in enumerate(VOCAB_SHAKESPEARE)}
+
+        for user in users:
+            if user not in user_data:
+                continue
+            ud = user_data[user]
+            x_data = ud.get("x", [])
+            y_data = ud.get("y", [])
+
+            for x_str, y_str in zip(x_data, y_data):
+                x_indices = [char_to_idx.get(c, 0) for c in x_str[:80]]
+                y_indices = [char_to_idx.get(c, 0) for c in y_str[:80]]
+
+                # Pad to 80 if shorter
+                while len(x_indices) < 80:
+                    x_indices.append(0)
+                while len(y_indices) < 80:
+                    y_indices.append(0)
+
+                all_x.append(x_indices[:80])
+                all_y.append(y_indices[:80])
+
+        if not all_x:
+            return None, None
+
+        x_tensor = torch.tensor(np.array(all_x), dtype=torch.long)
+        y_tensor = torch.tensor(np.array(all_y), dtype=torch.long)
+        return x_tensor, y_tensor
+
+    def get_dataloader(self) -> DataLoader:
+        """Assemble DataLoader. Falls back to synthetic if no data found."""
+        shard_data = self._load_all_shards(self.train_dir)
+        all_users = shard_data["users"]
+        user_data = shard_data["user_data"]
+
+        partition_users = self._get_partition_users(all_users)
+
+        if not partition_users:
+            logger.warning(
+                "No partition users found for %s partition %d. Using synthetic fallback.",
+                self.dataset, self.data_partition,
+            )
+            return self._synthetic_dataloader()
+
+        if self.dataset == "femnist":
+            x_tensor, y_tensor = self._prepare_femnist(user_data, partition_users)
+        elif self.dataset == "shakespeare":
+            x_tensor, y_tensor = self._prepare_shakespeare(user_data, partition_users)
+        else:
+            logger.warning("Unknown dataset: %s. Using synthetic fallback.", self.dataset)
+            return self._synthetic_dataloader()
+
+        if x_tensor is None or y_tensor is None:
+            logger.warning(
+                "No data assembled for %s partition %d. Using synthetic fallback.",
+                self.dataset, self.data_partition,
+            )
+            return self._synthetic_dataloader()
+
+        dataset = TensorDataset(x_tensor, y_tensor)
+        logger.info(
+            "DataLoader ready: %s, partition=%d, samples=%d",
+            self.dataset, self.data_partition, len(dataset),
+        )
+        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+
+    def _synthetic_dataloader(self) -> DataLoader:
+        """Generate synthetic fallback data for testing without real LEAF data."""
+        logger.warning(
+            "SYNTHETIC DATA: Generating fallback data for %s (partition %d). "
+            "This is for development/testing only.",
+            self.dataset, self.data_partition,
         )
 
-    # ------------------------------------------------------------------
-    # Model synchronisation
-    # ------------------------------------------------------------------
+        if self.dataset == "femnist":
+            # FEMNIST: (256, 1, 28, 28) float32, labels [0, 61]
+            x = torch.randn(256, 1, 28, 28, dtype=torch.float32)
+            y = torch.randint(0, 62, (256,), dtype=torch.long)
+        elif self.dataset == "shakespeare":
+            # Shakespeare: (256, 80) long [0, 79] for both x and y
+            x = torch.randint(0, 80, (256, 80), dtype=torch.long)
+            y = torch.randint(0, 80, (256, 80), dtype=torch.long)
+        else:
+            x = torch.randn(256, 1, 28, 28, dtype=torch.float32)
+            y = torch.randint(0, 62, (256,), dtype=torch.long)
 
-    def receive_global_model(self, global_weights: dict, round_number: int) -> None:
+        dataset = TensorDataset(x, y)
+        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+
+
+# ============================================================================
+# Honest Trainer — FedProx
+# ============================================================================
+
+
+class HonestTrainer:
+    """Honest FedProx trainer for legitimate clients."""
+
+    def __init__(self, model: nn.Module, global_weights: dict,
+                 mu: float = 0.01, lr: float = 0.01, epochs: int = 5,
+                 device: str = "cpu"):
+        self.model = model
+        self.global_weights = global_weights
+        self.mu = mu
+        self.lr = lr
+        self.epochs = epochs
+        self.device = device
+        self.heartbeat_delay = (0.5, 3.0)
+
+    def _run_epochs(self, data_loader) -> dict:
         """
-        Load the global model weights and record the round number.
-
-        The round number stored here becomes ``ClientUpdate.round_number``,
-        which the server uses to compute staleness::
-
-            staleness = server.global_round − update.round_number
-
-        Parameters
-        ----------
-        global_weights : dict[str, np.ndarray]   Weights from the server.
-        round_number   : int                      Current global round.
+        FedProx training loop (synchronous, run via asyncio.to_thread):
+          loss = CrossEntropy(output, y) + (mu/2) * sum(||w_i - w0_i||^2)
+        Returns {"loss": float, "weight_diff": dict_of_numpy, "num_samples": int}
         """
-        self.model.set_weights(global_weights)
-        self.current_round = round_number
-        logger.debug(
-            "Client %d received global model at round %d.", self.client_id, round_number
-        )
-
-    # ------------------------------------------------------------------
-    # Local training
-    # ------------------------------------------------------------------
-
-    def local_train(self, _global_round: int) -> ClientUpdate:
-        """
-        Run local training and return a ``ClientUpdate``.
-
-        Exact sequence (do NOT reorder):
-
-        1. Save pre-train weights snapshot.
-        2. Local SGD for ``config.local_epochs`` epochs.
-        3. Compute weight delta:  Δ = θ_local − θ_start.
-        4. Apply DP (clip + noise) if enabled.
-        5. Inject Byzantine attack (after DP) if malicious.
-        6. Build and return ``ClientUpdate``.
-
-        DP before attack rationale
-        --------------------------
-        This order models a device whose DP mechanism is intact (privacy is
-        preserved for the gradient computation step) but whose transmission
-        layer is compromised by the attacker.  The alternative order (attack
-        then DP) would let DP partially wash out the attack, which is
-        unrealistically optimistic.
-
-        Parameters
-        ----------
-        global_round : int   Current server round (stored in ClientUpdate
-                             for the server's staleness calculation).
-
-        Returns
-        -------
-        ClientUpdate
-        """
-        # ── Step 1: snapshot pre-train weights ──────────────────────────
-        pre_train_weights = self.model.get_weights()
-
-        # ── Step 2: local SGD ───────────────────────────────────────────
+        self.model.to(self.device)
         self.model.train()
-        optimizer = torch.optim.SGD(
-            self.model.parameters(),
-            lr=self.config.learning_rate,
-            momentum=0.9,
-        )
-        criterion = torch.nn.CrossEntropyLoss()
 
-        final_loss = 0.0
-        for epoch in range(self.config.local_epochs):
-            for batch_x, batch_y in self.dataloader:
+        # Load global weights into model
+        global_tensors = {}
+        for name, param in self.model.named_parameters():
+            if name in self.global_weights:
+                param.data.copy_(
+                    torch.tensor(self.global_weights[name], dtype=param.dtype).to(self.device)
+                )
+            global_tensors[name] = param.data.clone()
+
+        optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
+        criterion = nn.CrossEntropyLoss()
+
+        total_loss = 0.0
+        total_samples = 0
+
+        for epoch in range(self.epochs):
+            for batch_x, batch_y in data_loader:
                 batch_x = batch_x.to(self.device)
                 batch_y = batch_y.to(self.device)
 
                 optimizer.zero_grad()
-                logits = self.model(batch_x)
-                loss = criterion(logits, batch_y)
+                output = self.model(batch_x)
+
+                # Handle Shakespeare output shape: (B, 80, 80) -> reshape for CE
+                if output.dim() == 3:
+                    output = output.view(-1, output.size(-1))
+                    batch_y = batch_y.view(-1)
+
+                ce_loss = criterion(output, batch_y)
+
+                # FedProx proximal term
+                prox_loss = 0.0
+                for name, param in self.model.named_parameters():
+                    if name in global_tensors:
+                        prox_loss += torch.sum((param - global_tensors[name]) ** 2)
+                prox_loss = (self.mu / 2.0) * prox_loss
+
+                loss = ce_loss + prox_loss
                 loss.backward()
                 optimizer.step()
-                final_loss = loss.item()
 
-        logger.debug(
-            "Client %d — local training done (%d epochs), final_loss=%.4f.",
-            self.client_id, self.config.local_epochs, final_loss,
+                total_loss += ce_loss.item() * batch_x.size(0)
+                total_samples += batch_x.size(0)
+
+        # Compute weight diff (local - global)
+        weight_diff = {}
+        for name, param in self.model.named_parameters():
+            if name in self.global_weights:
+                weight_diff[name] = (
+                    param.data.cpu().numpy() - self.global_weights[name]
+                )
+
+        avg_loss = total_loss / max(total_samples, 1)
+        return {
+            "loss": avg_loss,
+            "weight_diff": weight_diff,
+            "num_samples": total_samples,
+        }
+
+    async def train(self, data_loader) -> dict:
+        """
+        Async wrapper: runs training in thread, then simulates heartbeat delay.
+        """
+        result = await asyncio.to_thread(self._run_epochs, data_loader)
+
+        # Async heartbeat delay
+        delay = random.uniform(*self.heartbeat_delay)
+        await asyncio.sleep(delay)
+
+        result["local_loss"] = result["loss"]
+        return result
+
+
+# ============================================================================
+# WebSocket Client
+# ============================================================================
+
+
+def serialize_weights(weights: dict) -> str:
+    """numpy arrays -> lists -> msgpack bytes -> base64 string."""
+    serializable = {}
+    for key, val in weights.items():
+        serializable[key] = val.tolist()
+    packed = msgpack.packb(serializable, use_bin_type=True)
+    return base64.b64encode(packed).decode("utf-8")
+
+
+def deserialize_weights(b64_str: str) -> dict:
+    """Reverses serialize_weights. Returns dict of numpy arrays."""
+    packed = base64.b64decode(b64_str)
+    unpacked = msgpack.unpackb(packed, raw=False)
+    weights = {}
+    for key, val in unpacked.items():
+        k = key if isinstance(key, str) else key.decode("utf-8")
+        weights[k] = np.array(val, dtype=np.float32)
+    return weights
+
+
+class WSClient:
+    """WebSocket client for communicating with the FedBuff server."""
+
+    def __init__(self, server_url: str, auth_token: str, client_id: str,
+                 task: str, on_global_model, on_rejected):
+        self.server_url = server_url
+        self.auth_token = auth_token
+        self.client_id = client_id
+        self.task = task
+        self.on_global_model = on_global_model
+        self.on_rejected = on_rejected
+        self.ws = None
+        self._connected = False
+
+    async def connect(self) -> None:
+        """Connect to server with exponential backoff retry: [2, 4, 8, 16, 32] seconds."""
+        import websockets
+
+        url = f"{self.server_url}?token={self.auth_token}&task={self.task}"
+        backoff_delays = [2, 4, 8, 16, 32]
+        attempt = 0
+
+        while True:
+            try:
+                self.ws = await websockets.connect(
+                    url,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    max_size=100 * 1024 * 1024,  # 100MB max message
+                )
+                self._connected = True
+                logger.info(
+                    "Connected to server: %s (client=%s, task=%s)",
+                    self.server_url, self.client_id, self.task,
+                )
+                return
+            except Exception as e:
+                delay = backoff_delays[min(attempt, len(backoff_delays) - 1)]
+                logger.warning(
+                    "Connection failed (attempt %d): %s. Retrying in %ds...",
+                    attempt + 1, e, delay,
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
+
+    async def send_update(self, update: dict) -> None:
+        """
+        Sends JSON weight_update message.
+        """
+        if not self.ws or not self._connected:
+            logger.warning("Cannot send update: not connected")
+            return
+
+        message = {
+            "type": "weight_update",
+            "client_id": self.client_id,
+            "task": self.task,
+            "round_num": update.get("round_num", 0),
+            "global_round_received": update.get("global_round_received", 0),
+            "weights": update.get("weights", ""),
+            "num_samples": update.get("num_samples", 0),
+            "local_loss": update.get("local_loss", 0.0),
+            "privacy_budget": update.get("privacy_budget", {}),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            await self.ws.send(json.dumps(message))
+            logger.debug("Sent weight update: round=%d", update.get("round_num", 0))
+        except Exception as e:
+            logger.error("Failed to send update: %s", e)
+            self._connected = False
+
+    async def receive_loop(self) -> None:
+        """Dispatches received messages."""
+        if not self.ws:
+            return
+
+        try:
+            async for message in self.ws:
+                try:
+                    data = json.loads(message)
+                    msg_type = data.get("type", "")
+
+                    if msg_type == "global_model":
+                        logger.info(
+                            "Received global model: task=%s, round=%d",
+                            data.get("task", ""), data.get("round_num", 0),
+                        )
+                        await self.on_global_model(data)
+
+                    elif msg_type == "rejected":
+                        logger.warning(
+                            "Update rejected by server: reason=%s, round=%d",
+                            data.get("reason", "unknown"), data.get("round_num", 0),
+                        )
+                        await self.on_rejected(data)
+
+                    elif msg_type == "status":
+                        logger.info(
+                            "Status broadcast: event=%s, task=%s",
+                            data.get("event", ""), data.get("task", ""),
+                        )
+
+                    elif msg_type == "pong":
+                        logger.debug("Pong received")
+
+                    else:
+                        logger.debug("Unknown message type: %s", msg_type)
+
+                except json.JSONDecodeError:
+                    logger.warning("Invalid JSON received from server")
+                except Exception as e:
+                    logger.error("Error processing server message: %s", e)
+
+        except Exception as e:
+            logger.info("WebSocket receive loop ended: %s", e)
+            self._connected = False
+
+    async def close(self) -> None:
+        """Close the WebSocket connection."""
+        if self.ws:
+            try:
+                await self.ws.close()
+            except Exception:
+                pass
+            self._connected = False
+
+
+# ============================================================================
+# Main FL Loop
+# ============================================================================
+
+
+async def main():
+    """Main FL client loop."""
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="FedBuff FL Client")
+    parser.add_argument("--env", type=str, required=True, help="Path to .env file")
+    parser.add_argument(
+        "--demo-speed", action="store_true",
+        help="Demo mode: LOCAL_EPOCHS=1, heartbeat delay=0.0",
+    )
+    args = parser.parse_args()
+
+    # Load environment variables
+    load_dotenv(args.env, override=True)
+
+    # Read configuration from environment
+    client_id = os.environ.get("CLIENT_ID", "unknown-client")
+    client_role = os.environ.get("CLIENT_ROLE", "legitimate_client")
+    display_name = os.environ.get("DISPLAY_NAME", client_id)
+    participant = os.environ.get("PARTICIPANT", "Unknown")
+    server_url = os.environ.get("SERVER_URL", "ws://localhost:8765/ws/fl")
+    auth_token = os.environ.get("AUTH_TOKEN", "")
+    dataset = os.environ.get("DATASET", "femnist")
+    data_partition = int(os.environ.get("DATA_PARTITION", "0"))
+    local_epochs = int(os.environ.get("LOCAL_EPOCHS", "5"))
+    learning_rate = float(os.environ.get("LEARNING_RATE", "0.01"))
+    mu = float(os.environ.get("MU", "0.01"))
+    dp_max_grad_norm = float(os.environ.get("DP_MAX_GRAD_NORM", "1.0"))
+    dp_noise_multiplier = float(os.environ.get("DP_NOISE_MULTIPLIER", "1.1"))
+    attack_scale = float(os.environ.get("ATTACK_SCALE", "-5.0"))
+    attack_type = os.environ.get("ATTACK_TYPE", "sign_flip_amplified")
+
+    # Demo speed overrides
+    if args.demo_speed:
+        local_epochs = 1
+        heartbeat_delay = (0.0, 0.0)
+    else:
+        heartbeat_delay = (0.5, 3.0)
+
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"%(asctime)s [{client_id}] [{dataset}] %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+
+    logger.info(
+        "Starting FL client: id=%s, role=%s, dataset=%s, partition=%d",
+        client_id, client_role, dataset, data_partition,
+    )
+
+    # Step 1: Load data
+    leaf_loader = LEAFLoader(dataset, data_partition, partition_count=3, batch_size=32)
+    data_loader = leaf_loader.get_dataloader()
+
+    # Step 2: Create model
+    model = get_model(dataset)
+
+    # Step 3: Privacy engine
+    privacy_engine = PrivacyEngine(
+        max_grad_norm=dp_max_grad_norm,
+        noise_multiplier=dp_noise_multiplier,
+    )
+
+    # Shared state
+    current_global_weights = {}
+    current_global_round = 0
+    local_round = 0
+    new_model_event = asyncio.Event()
+
+    # Extract initial weights from model
+    for name, param in model.named_parameters():
+        current_global_weights[name] = param.data.cpu().numpy().copy()
+
+    # Callbacks
+    async def on_global_model(data: dict):
+        nonlocal current_global_weights, current_global_round
+        weights_b64 = data.get("weights", "")
+        current_global_weights = deserialize_weights(weights_b64)
+        current_global_round = data.get("round_num", 0)
+        new_model_event.set()
+
+    async def on_rejected(data: dict):
+        logger.warning(
+            "Update rejected: reason=%s, round=%d",
+            data.get("reason", "unknown"), data.get("round_num", 0),
         )
 
-        # ── Step 3: compute weight delta Δ = θ_local − θ_start ─────────
-        weight_delta = self.model.get_weight_delta(pre_train_weights)
+    # Step 4: Create WebSocket client
+    ws_client = WSClient(server_url, auth_token, client_id, dataset,
+                         on_global_model, on_rejected)
 
-        # ── Step 4: DP — clip then add noise ────────────────────────────
-        if self.dp_mechanism is not None:
-            weight_delta = self.dp_mechanism.privatize(weight_delta)
-            logger.debug(
-                "Client %d — DP applied (clip_norm=%.2f, noise_mult=%.2f).",
-                self.client_id,
-                self.config.dp_clip_norm,
-                self.config.dp_noise_multiplier,
+    # Connect (with retries)
+    await ws_client.connect()
+
+    # Start receive loop in background
+    receive_task = asyncio.create_task(ws_client.receive_loop())
+
+    # Wait for initial global model
+    logger.info("Waiting for initial global model from server...")
+    try:
+        await asyncio.wait_for(new_model_event.wait(), timeout=60.0)
+    except asyncio.TimeoutError:
+        logger.warning("Timeout waiting for initial global model. Using local init.")
+
+    new_model_event.clear()
+
+    # Step 5: Main FL training loop
+    try:
+        while True:
+            local_round += 1
+
+            # Create trainer with current global weights
+            if client_role == "malicious_client":
+                trainer = MaliciousTrainer(
+                    model=model,
+                    global_weights=current_global_weights,
+                    mu=mu,
+                    lr=learning_rate,
+                    epochs=local_epochs,
+                    device="cpu",
+                    attack_scale=attack_scale,
+                )
+            else:
+                trainer = HonestTrainer(
+                    model=model,
+                    global_weights=current_global_weights,
+                    mu=mu,
+                    lr=learning_rate,
+                    epochs=local_epochs,
+                    device="cpu",
+                )
+
+            # Override heartbeat delay for demo speed
+            trainer.heartbeat_delay = heartbeat_delay
+
+            # Train
+            result = await trainer.train(data_loader)
+
+            # Apply DP
+            processed_diff = privacy_engine.process(result["weight_diff"])
+            budget = privacy_engine.get_privacy_budget()
+
+            # Serialize weights
+            weights_b64 = serialize_weights(processed_diff)
+
+            # Send to server
+            await ws_client.send_update({
+                "round_num": local_round,
+                "global_round_received": current_global_round,
+                "weights": weights_b64,
+                "num_samples": result["num_samples"],
+                "local_loss": result.get("local_loss", result.get("loss", 0.0)),
+                "privacy_budget": budget,
+            })
+
+            logger.info(
+                "%s | %s | Round %d | Loss %.6f | Epsilon %.4f | Samples %d",
+                client_id, dataset, local_round,
+                result.get("local_loss", result.get("loss", 0.0)),
+                budget["epsilon"], result["num_samples"],
             )
 
-        # ── Step 5: Byzantine attack (after DP) ─────────────────────────
-        if self.is_byzantine:
-            weight_delta = apply_attack(weight_delta, self.attack_type)
-            logger.debug(
-                "Client %d — Byzantine attack applied (%s).",
-                self.client_id, self.attack_type,
-            )
+            # Wait for new global model or timeout
+            new_model_event.clear()
+            try:
+                await asyncio.wait_for(new_model_event.wait(), timeout=120.0)
+            except asyncio.TimeoutError:
+                logger.info("No new global model received in 120s, continuing training")
 
-        # ── Step 6: build ClientUpdate ───────────────────────────────────
-        return ClientUpdate(
-            client_id=self.client_id,
-            weight_delta=weight_delta,
-            round_number=self.current_round,
-            num_samples=self.num_samples,
-            training_loss=final_loss,
-            is_byzantine=self.is_byzantine,
-        )
+            new_model_event.clear()
 
-    # ------------------------------------------------------------------
-    # Network simulation
-    # ------------------------------------------------------------------
+    except KeyboardInterrupt:
+        logger.info("Client shutting down (keyboard interrupt)")
+    except Exception as e:
+        logger.error("Client error: %s", e)
+    finally:
+        receive_task.cancel()
+        try:
+            await receive_task
+        except asyncio.CancelledError:
+            pass
+        await ws_client.close()
+        logger.info("Client %s stopped.", client_id)
 
-    def simulate_network_delay(self) -> float:
-        """
-        Block the calling thread to simulate the straggler problem.
 
-        Fast clients (70 %) sleep 0.0–0.5 s.
-        Slow clients (30 %) sleep 1.0–3.0 s.
-
-        When ``config.client_speed_variance`` is False, returns 0.0 immediately
-        (useful for deterministic test runs).
-
-        Returns
-        -------
-        float   Actual sleep duration in seconds.
-        """
-        if not self.config.client_speed_variance:
-            return 0.0
-
-        if self.is_fast_client:
-            delay = random.uniform(0.0, 0.5)
-        else:
-            # Slow straggler — creates stale gradients (SABD corrects for this)
-            delay = random.uniform(1.0, 3.0)
-
-        time.sleep(delay)
-        logger.debug(
-            "Client %d — network delay %.2f s (fast=%s).",
-            self.client_id, delay, self.is_fast_client,
-        )
-        return delay
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,4 +1,70 @@
-ARFL_Final_Blueprint.docx
-data/
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# Environment files (contain secrets)
+*.env
+pc*.env
+users.json
+demo_tokens.txt
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Byte-compiled / optimized
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Results & checkpoints
+results/
+*.pt
+*.pth
+checkpoints/
+
+# Node / Dashboard
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.env
+node_modules/
+
+# macOS
 .DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# LEAF data (too large for git)
+data/
+leaf/
+
+# Logs
+*.log
+
+# Pytest
+.pytest_cache/
+htmlcov/
+.coverage
