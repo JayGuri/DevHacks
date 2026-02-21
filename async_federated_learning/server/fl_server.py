@@ -18,7 +18,8 @@ _jwt_secret: str = None
 _user_registry: dict = {}
 connected_clients: dict = {}
 # {client_id: {"websocket": ws, "role": str, "display_name": str,
-#              "participant": str, "task": str, "connected_at": float}}
+#              "participant": str, "task": str, "connected_at": float,
+#              "last_heartbeat": float, "is_joining": bool}}
 
 
 def load_users(filepath: str) -> None:
@@ -55,11 +56,20 @@ def register_client(client_id: str, websocket, role: str, display_name: str,
         "participant": participant,
         "task": task,
         "connected_at": time.time(),
+        "last_heartbeat": time.time(),
+        "is_joining": True,   # grace period until first weight_update received
     }
     logger.info(
         "Client registered: %s (%s) participant=%s task=%s",
         client_id, display_name, participant, task,
     )
+
+
+def update_heartbeat(client_id: str) -> None:
+    """Touch the heartbeat timestamp and clear the joining grace period."""
+    if client_id in connected_clients:
+        connected_clients[client_id]["last_heartbeat"] = time.time()
+        connected_clients[client_id]["is_joining"] = False
 
 
 def deregister_client(client_id: str) -> None:
@@ -89,27 +99,120 @@ def require_role(required_role: str):
     return _dependency
 
 
-class AsyncBuffer:
-    """Task-aware asyncio.Queue-based staging buffer for FedBuff."""
+async def heartbeat_checker(
+    buffer: "AsyncBuffer",
+    timeout: float = 60.0,
+    check_interval: float = 10.0,
+) -> None:
+    """Periodic task: scans connected_clients for stale entries.
 
-    def __init__(self, buffer_size_k: int, supported_tasks: list, aggregation_callback):
+    If a client's last_heartbeat is older than `timeout` seconds:
+      1. Remove from buffer's _queued_clients (prevent permanent block)
+      2. Deregister from connected_clients
+      3. Emit client_timeout SSE event
+    """
+    from evaluation.metrics import emit_event
+
+    logger.info(
+        "Heartbeat checker started (timeout=%.1fs, interval=%.1fs)",
+        timeout, check_interval,
+    )
+    while True:
+        await asyncio.sleep(check_interval)
+        now = time.time()
+        stale = [
+            (cid, info)
+            for cid, info in list(connected_clients.items())
+            if now - info.get("last_heartbeat", now) > timeout
+        ]
+        for client_id, info in stale:
+            task = info.get("task", "")
+            logger.warning(
+                "Client timeout detected: %s (task=%s, last_seen=%.1fs ago)",
+                client_id, task, now - info["last_heartbeat"],
+            )
+            if task and task in buffer._queued_clients:
+                buffer._queued_clients[task].discard(client_id)
+            deregister_client(client_id)
+            asyncio.create_task(emit_event("client_timeout", {
+                "client_id": client_id,
+                "task": task,
+                "last_heartbeat": info["last_heartbeat"],
+            }))
+
+
+class AsyncBuffer:
+    """Task-aware asyncio.Queue-based staging buffer for FedBuff.
+
+    Supports:
+    - Event-driven aggregation: wakes immediately when min_updates threshold is
+      reached and max_wait_seconds has elapsed, rather than polling every 0.5s.
+    - Per-task independent watcher coroutines for zero cross-task interference.
+    - Staleness gate: updates with staleness > max_staleness are rejected before
+      enqueueing, keeping the buffer free of dangerously stale updates.
+    """
+
+    def __init__(
+        self,
+        buffer_size_k: int,
+        supported_tasks: list,
+        aggregation_callback,
+        get_current_round=None,
+        max_staleness: int = 10,
+        min_updates: int = None,
+        max_wait_seconds: float = 10.0,
+        max_updates_per_batch: int = 20,
+    ):
         self.buffer_size_k = buffer_size_k
+        self.min_updates = min_updates if min_updates is not None else buffer_size_k
+        self.max_wait_seconds = max_wait_seconds
+        self.max_updates_per_batch = max_updates_per_batch
         self.queues = {task: asyncio.Queue() for task in supported_tasks}
         self._locks = {task: asyncio.Lock() for task in supported_tasks}
         self._queued_clients = {task: set() for task in supported_tasks}
         self.aggregation_callback = aggregation_callback
+        self._get_current_round = get_current_round
+        self._max_staleness = max_staleness
+        # Event-driven: one asyncio.Event per task, signalled by put()
+        self._new_update_events = {task: asyncio.Event() for task in supported_tasks}
+        # Timer: tracks when min_updates threshold was first reached per task
+        self._timer_started_at = {task: None for task in supported_tasks}
 
     async def put(self, update: dict, task: str) -> None:
-        """
-        Enqueues an update into the task-specific buffer queue.
-        update structure: {"client_id", "task", "round_num", "global_round_received",
-                           "weights" (numpy dict), "num_samples", "local_loss", "timestamp"}
+        """Enqueues an update into the task-specific buffer queue.
+
+        Staleness gate: if get_current_round is provided and the update's
+        staleness exceeds max_staleness, the update is silently rejected
+        and an SSE event is emitted.
         """
         if task not in self.queues:
             logger.error("Unknown task for buffer: %s", task)
             return
 
         client_id = update.get("client_id", "unknown")
+
+        # --- Staleness gate ---
+        if self._get_current_round is not None:
+            current_round = self._get_current_round(task)
+            global_round_received = update.get("global_round_received", 0)
+            staleness = max(0, current_round - global_round_received)
+            if staleness > self._max_staleness:
+                logger.warning(
+                    "Update REJECTED (staleness=%d > max=%d): client=%s task=%s",
+                    staleness, self._max_staleness, client_id, task,
+                )
+                try:
+                    from evaluation.metrics import emit_event
+                    asyncio.create_task(emit_event("update_rejected", {
+                        "client_id": client_id,
+                        "task": task,
+                        "reason": "staleness_exceeded",
+                        "staleness": staleness,
+                        "max_staleness": self._max_staleness,
+                    }))
+                except Exception:
+                    pass
+                return
 
         async with self._locks[task]:
             if client_id in self._queued_clients[task]:
@@ -118,11 +221,18 @@ class AsyncBuffer:
             self._queued_clients[task].add(client_id)
             await self.queues[task].put(update)
             current_size = self.queues[task].qsize()
+            # Start timer when min_updates threshold is first reached
+            if current_size >= self.min_updates and self._timer_started_at[task] is None:
+                self._timer_started_at[task] = asyncio.get_event_loop().time()
+                logger.debug("Timer started for task=%s at size=%d", task, current_size)
 
         logger.debug(
             "Buffer put: task=%s, client=%s, buffer_size=%d/%d",
             task, client_id, current_size, self.buffer_size_k,
         )
+
+        # Signal the per-task watcher
+        self._new_update_events[task].set()
 
         # Emit buffer_size telemetry event
         try:
@@ -135,10 +245,30 @@ class AsyncBuffer:
         except Exception:
             pass
 
+    async def drain_partial(self, task: str, max_items: int) -> list:
+        """Drain up to max_items from queue atomically. Returns all available up to cap."""
+        if task not in self.queues:
+            return []
+        async with self._locks[task]:
+            n = min(self.queues[task].qsize(), max_items)
+            if n == 0:
+                return []
+            items = []
+            for _ in range(n):
+                item = self.queues[task].get_nowait()
+                cid = item.get("client_id", "unknown")
+                self._queued_clients[task].discard(cid)
+                items.append(item)
+            self._timer_started_at[task] = None  # reset timer after drain
+            logger.info(
+                "Buffer partial drain: task=%s, items=%d, remaining=%d",
+                task, len(items), self.queues[task].qsize(),
+            )
+            return items
+
     async def drain(self, task: str) -> list:
-        """
-        Acquires lock. If qsize >= buffer_size_k: dequeues exactly buffer_size_k items atomically.
-        Returns the list or [] if insufficient items.
+        """Legacy drain: dequeues exactly buffer_size_k if available.
+        Kept for backward compatibility with existing tests.
         """
         if task not in self.queues:
             return []
@@ -154,6 +284,7 @@ class AsyncBuffer:
                 if client_id in self._queued_clients[task]:
                     self._queued_clients[task].remove(client_id)
                 items.append(item)
+            self._timer_started_at[task] = None
 
             logger.info(
                 "Buffer drained: task=%s, items=%d, remaining=%d",
@@ -161,26 +292,70 @@ class AsyncBuffer:
             )
             return items
 
-    async def buffer_watcher(self) -> None:
+    async def _task_watcher(self, task: str) -> None:
+        """Per-task event-driven watcher loop.
+
+        Wakes up when:
+        - A new update event fires (from put()), or
+        - max_wait_seconds has elapsed (ceiling timer).
+
+        Aggregates when:
+        - max_updates_per_batch items queued (batch cap), or
+        - min_updates met AND max_wait_seconds elapsed since threshold was reached.
         """
-        Infinite loop, 0.5s sleep between cycles.
-        For each task: if qsize >= buffer_size_k, drain, then call aggregation_callback.
-        Both tasks checked independently per cycle.
-        """
-        logger.info("Buffer watcher started (K=%d)", self.buffer_size_k)
+        event = self._new_update_events[task]
         while True:
-            for task in self.queues:
-                if self.queues[task].qsize() >= self.buffer_size_k:
-                    updates = await self.drain(task)
-                    if updates:
-                        try:
-                            await self.aggregation_callback(updates, task)
-                        except Exception as e:
-                            logger.error(
-                                "Aggregation callback failed: task=%s, error=%s",
-                                task, e,
-                            )
-            await asyncio.sleep(0.5)
+            try:
+                await asyncio.wait_for(event.wait(), timeout=self.max_wait_seconds)
+            except asyncio.TimeoutError:
+                pass  # ceiling timer hit — fall through to check condition
+            finally:
+                event.clear()
+
+            current_size = self.queues[task].qsize()
+            if current_size == 0:
+                continue
+
+            now = asyncio.get_event_loop().time()
+            timer_started = self._timer_started_at[task]
+            time_elapsed = (now - timer_started) if timer_started is not None else 0.0
+
+            should_aggregate = (
+                current_size >= self.max_updates_per_batch  # batch cap
+                or (current_size >= self.min_updates and time_elapsed >= self.max_wait_seconds)
+            )
+
+            if should_aggregate:
+                updates = await self.drain_partial(task, self.max_updates_per_batch)
+                if updates:
+                    try:
+                        await self.aggregation_callback(updates, task)
+                    except Exception as e:
+                        logger.error(
+                            "Aggregation callback failed: task=%s, error=%s", task, e,
+                        )
+
+    async def buffer_watcher(self) -> None:
+        """Spawns one _task_watcher coroutine per task via asyncio.gather().
+
+        Replaces the old 0.5s polling loop with an event-driven design where
+        each task wakes immediately when new updates arrive.
+        """
+        logger.info(
+            "Event-driven buffer watcher started "
+            "(min_updates=%d, max_wait=%.1fs, max_batch=%d)",
+            self.min_updates, self.max_wait_seconds, self.max_updates_per_batch,
+        )
+        watchers = [
+            asyncio.create_task(self._task_watcher(task))
+            for task in self.queues
+        ]
+        try:
+            await asyncio.gather(*watchers)
+        except asyncio.CancelledError:
+            for w in watchers:
+                w.cancel()
+            raise
 
     def size(self, task: str) -> int:
         """Returns current queue size for a task."""
@@ -189,11 +364,16 @@ class AsyncBuffer:
         return self.queues[task].qsize()
 
 
-async def handle_websocket(websocket, token: str, task: str,
-                            buffer: "AsyncBuffer", model_history, config) -> None:
-    """
-    Full WebSocket session handler for one client connection.
-    """
+async def handle_websocket(
+    websocket,
+    token: str,
+    task: str,
+    buffer: "AsyncBuffer",
+    model_history,
+    config,
+    network_simulator=None,
+) -> None:
+    """Full WebSocket session handler for one client connection."""
     from evaluation.metrics import emit_event
 
     # Step 1: Verify token
@@ -248,6 +428,9 @@ async def handle_websocket(websocket, token: str, task: str,
                 msg_type = data.get("type", "")
 
                 if msg_type == "weight_update":
+                    # Update heartbeat — clears is_joining grace period
+                    update_heartbeat(client_id)
+
                     # Parse and validate
                     update_client_id = data.get("client_id", client_id)
                     update_task = data.get("task", task)
@@ -266,7 +449,6 @@ async def handle_websocket(websocket, token: str, task: str,
                     passed, norm = check_l2_norm(weights, config.L2_NORM_THRESHOLD)
 
                     if not passed:
-                        # Rejected by gatekeeper
                         await websocket.send_json({
                             "type": "rejected",
                             "client_id": client_id,
@@ -288,7 +470,7 @@ async def handle_websocket(websocket, token: str, task: str,
                             client_id, task, norm,
                         )
                     else:
-                        # Passed gatekeeper — enqueue
+                        # Passed gatekeeper — build update dict
                         update = {
                             "client_id": client_id,
                             "task": task,
@@ -299,6 +481,18 @@ async def handle_websocket(websocket, token: str, task: str,
                             "local_loss": local_loss,
                             "timestamp": timestamp,
                         }
+
+                        # Network simulation (if enabled)
+                        if network_simulator is not None:
+                            update = await network_simulator.simulate_client_upload(
+                                update, client_id
+                            )
+                            if update is None:
+                                logger.info(
+                                    "Update dropped by network simulator: client=%s", client_id
+                                )
+                                continue
+
                         await buffer.put(update, task)
                         await emit_event("update_received", {
                             "client_id": client_id,
@@ -314,7 +508,13 @@ async def handle_websocket(websocket, token: str, task: str,
                             client_id, task, round_num, norm, num_samples, local_loss,
                         )
 
+                elif msg_type == "heartbeat":
+                    update_heartbeat(client_id)
+                    await websocket.send_json({"type": "heartbeat_ack", "client_id": client_id})
+                    logger.debug("Heartbeat from %s", client_id)
+
                 elif msg_type == "ping":
+                    update_heartbeat(client_id)
                     await websocket.send_json({"type": "pong"})
 
                 else:
@@ -330,7 +530,9 @@ async def handle_websocket(websocket, token: str, task: str,
     except Exception as e:
         logger.info("WebSocket disconnected: %s (%s)", client_id, e)
     finally:
-        # Cleanup on disconnect
+        # Remove from buffer's pending set to prevent permanent block on reconnect
+        if task in buffer._queued_clients:
+            buffer._queued_clients[task].discard(client_id)
         deregister_client(client_id)
         await emit_event("client_left", {
             "client_id": client_id,

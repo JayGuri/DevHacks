@@ -77,6 +77,44 @@ class Settings(BaseSettings):
     CLIENT_SPEED_VARIANCE: bool = True
 
     # ------------------------------------------------------------------
+    # Event-Driven Buffer
+    # ------------------------------------------------------------------
+    MIN_UPDATES_FOR_AGGREGATION: int = 2
+    MAX_WAIT_SECONDS: float = 10.0
+    MAX_UPDATES_PER_BATCH: int = 20
+
+    # ------------------------------------------------------------------
+    # Client Dropout / Heartbeat
+    # ------------------------------------------------------------------
+    CLIENT_HEARTBEAT_TIMEOUT: float = 60.0
+    MIN_CLIENTS_FOR_AGGREGATION: int = 1
+    HEARTBEAT_CHECK_INTERVAL: float = 10.0
+
+    # ------------------------------------------------------------------
+    # Staleness-Based Trust Scoring
+    # ------------------------------------------------------------------
+    STALENESS_DECAY_FN: str = "polynomial"   # "exponential" | "polynomial"
+    STALENESS_LAMBDA: float = 0.1            # lambda for exponential decay
+    STALENESS_REPUTATION_WEIGHT: float = 0.5 # 0=pure staleness, 1=pure reputation
+
+    # ------------------------------------------------------------------
+    # Network Simulation
+    # ------------------------------------------------------------------
+    NETWORK_SIMULATION_ENABLED: bool = False
+    PACKET_LOSS_PROB: float = 0.0
+    MIN_LATENCY_MS: float = 10.0
+    MAX_LATENCY_MS: float = 500.0
+    NETWORK_PARTITION_ENABLED: bool = False
+    PARTITION_CLIENTS: List[str] = []
+
+    # ------------------------------------------------------------------
+    # Multi-Model / Personalization
+    # ------------------------------------------------------------------
+    PERSONALIZATION_ENABLED: bool = False
+    PERSONALIZATION_ALPHA: float = 0.2
+    MODEL_VERSIONING_ENABLED: bool = True
+
+    # ------------------------------------------------------------------
     # Aggregation (merged)
     # ------------------------------------------------------------------
     AGGREGATION_STRATEGY: str = "trimmed_mean"
@@ -93,9 +131,19 @@ class Settings(BaseSettings):
     ANOMALY_THRESHOLD: float = 2.5
 
     # ------------------------------------------------------------------
-    # Defense — Gatekeeper (legacy static threshold as fallback)
+    # Defense — Gatekeeper
     # ------------------------------------------------------------------
     L2_NORM_THRESHOLD: float = 500.0
+    use_gatekeeper: bool = True
+    gatekeeper_l2_factor: float = 3.0
+    gatekeeper_max_threshold: float = 1000.0
+
+    # ------------------------------------------------------------------
+    # Multimodal / text model settings
+    # ------------------------------------------------------------------
+    modality: str = "image"          # "image" | "text"
+    text_model_type: str = "lstm"    # "lstm" | "rnn"
+    vocab_size: int = 80             # Shakespeare character vocabulary size
 
     # ------------------------------------------------------------------
     # Differential Privacy (merged)
@@ -176,6 +224,31 @@ class Settings(BaseSettings):
                 ("MAX_STALENESS", self.MAX_STALENESS),
                 ("STALENESS_ALPHA", self.STALENESS_ALPHA),
                 ("CLIENT_SPEED_VARIANCE", self.CLIENT_SPEED_VARIANCE),
+                ("MIN_UPDATES_FOR_AGGREGATION", self.MIN_UPDATES_FOR_AGGREGATION),
+                ("MAX_WAIT_SECONDS", self.MAX_WAIT_SECONDS),
+                ("MAX_UPDATES_PER_BATCH", self.MAX_UPDATES_PER_BATCH),
+            ],
+            "Client Dropout": [
+                ("CLIENT_HEARTBEAT_TIMEOUT", self.CLIENT_HEARTBEAT_TIMEOUT),
+                ("MIN_CLIENTS_FOR_AGGREGATION", self.MIN_CLIENTS_FOR_AGGREGATION),
+                ("HEARTBEAT_CHECK_INTERVAL", self.HEARTBEAT_CHECK_INTERVAL),
+            ],
+            "Staleness Trust": [
+                ("STALENESS_DECAY_FN", self.STALENESS_DECAY_FN),
+                ("STALENESS_LAMBDA", self.STALENESS_LAMBDA),
+                ("STALENESS_REPUTATION_WEIGHT", self.STALENESS_REPUTATION_WEIGHT),
+            ],
+            "Network Simulation": [
+                ("NETWORK_SIMULATION_ENABLED", self.NETWORK_SIMULATION_ENABLED),
+                ("PACKET_LOSS_PROB", self.PACKET_LOSS_PROB),
+                ("MIN_LATENCY_MS", self.MIN_LATENCY_MS),
+                ("MAX_LATENCY_MS", self.MAX_LATENCY_MS),
+                ("NETWORK_PARTITION_ENABLED", self.NETWORK_PARTITION_ENABLED),
+            ],
+            "Personalization": [
+                ("PERSONALIZATION_ENABLED", self.PERSONALIZATION_ENABLED),
+                ("PERSONALIZATION_ALPHA", self.PERSONALIZATION_ALPHA),
+                ("MODEL_VERSIONING_ENABLED", self.MODEL_VERSIONING_ENABLED),
             ],
             "Aggregation": [
                 ("AGGREGATION_STRATEGY", self.AGGREGATION_STRATEGY),
@@ -222,3 +295,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Alias used by test_multimodal.py and experiment scripts
+Config = Settings
