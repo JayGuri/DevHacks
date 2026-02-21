@@ -3,11 +3,13 @@
 ## Setup
 
 ### 1. Install Dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 2. Verify Installation
+
 ```bash
 python test_multimodal.py
 # Expected: 6/6 tests passing ✅
@@ -16,6 +18,7 @@ python test_multimodal.py
 ## Running Experiments
 
 ### Experiment 1: Image Classification (Async + Gatekeeper)
+
 ```python
 from async_federated_learning.config import Config
 from async_federated_learning.main import main
@@ -35,6 +38,7 @@ main(config)
 ```
 
 **Expected Output:**
+
 ```
 Round 1/20: processed=8, gatekeeper_rejected=2, SABD_rejected=1, acc=65.3%
 Round 5/20: processed=9, gatekeeper_rejected=1, SABD_rejected=0, acc=82.1%
@@ -49,6 +53,7 @@ Final Metrics:
 ```
 
 ### Experiment 2: Text Prediction (LSTM, Async + Gatekeeper)
+
 ```python
 config = Config()
 config.modality = "text"                     # Use LSTM/RNN models
@@ -63,6 +68,7 @@ main(config)
 ```
 
 **Expected Output:**
+
 ```
 Round 1/10: processed=3, gatekeeper_rejected=1, SABD_rejected=1, perplexity=45.2
 Round 5/10: processed=4, gatekeeper_rejected=1, SABD_rejected=0, perplexity=18.3
@@ -75,6 +81,7 @@ Final Metrics:
 ```
 
 ### Experiment 3: Sync vs Async Comparison
+
 ```python
 # Sync Mode
 config_sync = Config()
@@ -95,6 +102,7 @@ print(f"Speedup: {metrics_sync['total_time'] / metrics_async['total_time']:.2f}x
 ```
 
 **Expected Output:**
+
 ```
 Sync: 24.5s, Acc=92.3%
 Async: 12.1s, Acc=92.8%
@@ -102,6 +110,7 @@ Speedup: 2.02x ← Async is ~2x faster!
 ```
 
 ### Experiment 4: With vs Without Gatekeeper
+
 ```python
 # Without Gatekeeper
 config_no_gk = Config()
@@ -121,12 +130,14 @@ print(f"With GK: Acc={metrics_with_gk['final_acc']:.2f}%, ASR={metrics_with_gk['
 ```
 
 **Expected Output:**
+
 ```
 Without GK: Acc=78.2%, ASR=18.3% ← More attacks succeed
 With GK: Acc=91.5%, ASR=5.2% ← Gatekeeper blocks most attacks
 ```
 
 ### Experiment 5: Aggregation Method Comparison
+
 ```python
 methods = ["fedavg", "trimmed_mean", "coordinate_median"]
 results = {}
@@ -143,6 +154,7 @@ for method, metrics in results.items():
 ```
 
 **Expected Output:**
+
 ```
 fedavg: Acc=82.3%, ASR=12.1% ← Vulnerable to outliers
 trimmed_mean: Acc=89.5%, ASR=6.3% ← Good robustness
@@ -150,6 +162,7 @@ coordinate_median: Acc=91.2%, ASR=4.8% ← Best defense
 ```
 
 ### Experiment 6: LSTM vs RNN Comparison
+
 ```python
 # LSTM
 config_lstm = Config()
@@ -169,6 +182,7 @@ print(f"RNN: Perplexity={metrics_rnn['perplexity']:.2f}, Time={metrics_rnn['tota
 ```
 
 **Expected Output:**
+
 ```
 LSTM: Perplexity=12.1, Time=45.3s (more capacity, slower)
 RNN: Perplexity=14.3, Time=25.8s (less capacity, faster)
@@ -216,6 +230,7 @@ config.text_model_type = "lstm"       # "lstm" or "rnn" (for text)
 ## Checking Results
 
 ### Metrics Tracked Per Round
+
 ```python
 round_metrics = {
     "round": 5,
@@ -230,6 +245,7 @@ round_metrics = {
 ```
 
 ### Accessing Metrics History
+
 ```python
 from async_federated_learning.server.fl_server import AsyncFLServer
 
@@ -258,6 +274,7 @@ print(f"Defense rate: {(total_gk_rejections + total_sabd_rejections) / (total_pr
 ## Troubleshooting
 
 ### Issue: Tests failing
+
 ```bash
 # Check Python version (3.9+ required)
 python --version
@@ -270,6 +287,7 @@ python test_multimodal.py
 ```
 
 ### Issue: CUDA out of memory
+
 ```python
 # Reduce batch size
 config.batch_size = 16  # Instead of 32
@@ -279,6 +297,7 @@ config.hidden_dim = 128  # Instead of 256
 ```
 
 ### Issue: Slow convergence
+
 ```python
 # Increase learning rate
 config.learning_rate = 0.05  # Instead of 0.01
@@ -291,6 +310,7 @@ config.aggregation_method = "fedavg"
 ```
 
 ### Issue: High attack success rate
+
 ```python
 # Enable gatekeeper
 config.use_gatekeeper = True
@@ -342,6 +362,7 @@ cat results/experiment_results.txt
 ## Support
 
 If you encounter issues:
+
 1. Check error messages in terminal
 2. Review configuration parameters
 3. Check dataset paths (data/mnist, data/shakespeare.txt)

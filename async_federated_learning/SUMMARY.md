@@ -9,12 +9,14 @@ Your request has been **fully implemented**:
 ## What Was Implemented
 
 ### 1. True Asynchronous Updates ✅
+
 - **Quorum-based aggregation**: Server aggregates when **50% of clients** respond (not all)
 - **Immediate processing**: Updates processed as soon as threshold reached
 - **No waiting for stragglers**: Fast clients don't wait for slow ones
 - **Mode detection**: Automatically uses async when `client_speed_variance` > 0
 
 ### 2. Multi-Layer Security Filtering ✅
+
 All updates pass through **4 defense layers** before aggregation:
 
 1. **Gatekeeper** (Layer 1 - NEW): L2 norm inspection
@@ -35,6 +37,7 @@ All updates pass through **4 defense layers** before aggregation:
    - Final defense against remaining outliers
 
 ### 3. Automatic Relevance & Security Selection ✅
+
 - **Relevance**: Only updates within staleness threshold are used
 - **Security**: Byzantine/malicious updates filtered by multiple layers
 - **Quality**: Only clean, timely, relevant updates reach global model
@@ -44,17 +47,20 @@ All updates pass through **4 defense layers** before aggregation:
 ### Modified: `server/fl_server.py`
 
 1. **Added Gatekeeper import** (line 60)
+
    ```python
    from async_federated_learning.detection.gatekeeper import Gatekeeper
    ```
 
 2. **Initialize gatekeeper in `__init__`** (lines 106-115)
+
    ```python
    if config.use_gatekeeper:
        self.gatekeeper = gatekeeper or Gatekeeper(...)
    ```
 
 3. **Added async configuration** (lines 124-127)
+
    ```python
    self.min_updates_for_aggregation = max(1, int(config.num_clients * 0.5))  # 50% quorum
    self.aggregation_event = threading.Event()
@@ -62,19 +68,21 @@ All updates pass through **4 defense layers** before aggregation:
    ```
 
 4. **Modified `receive_update()`** (lines 181-186)
+
    ```python
    if self.async_mode and self.update_queue.qsize() >= self.min_updates_for_aggregation:
        self.aggregation_event.set()  # Trigger immediate aggregation
    ```
 
 5. **Modified `aggregate_pending_updates()`** (lines 264-280)
+
    ```python
    # Step 2: Gatekeeper L2 filtering (NEW)
    if self.gatekeeper:
        accepted_gk, rejected_gk, gk_stats = self.gatekeeper.inspect_updates(...)
        gatekeeper_rejected = len(rejected_gk)
        updates = accepted_gk  # Keep only accepted
-   
+
    # Then: staleness filter → SABD → robust aggregation
    ```
 
@@ -93,6 +101,7 @@ All updates pass through **4 defense layers** before aggregation:
 ## How It Works
 
 ### Async Flow (client_speed_variance > 0)
+
 ```
 Round Start
     │
@@ -121,6 +130,7 @@ Round Complete (0.6s) ← Fast! Didn't wait for slow clients
 ```
 
 ### Sync Flow (client_speed_variance = 0)
+
 ```
 Round Start
     │
@@ -142,12 +152,14 @@ Round Complete (1.7s) ← Slower, but simpler
 ## Configuration
 
 ### Enable Async Mode
+
 ```python
 # In config.py
 client_speed_variance = 0.5  # >0 enables async, 0 = sync
 ```
 
 ### Enable Gatekeeper
+
 ```python
 # In config.py
 use_gatekeeper = True
@@ -206,16 +218,19 @@ round_metrics = server.run_round(clients)
 ## Performance Benefits
 
 ### Latency Reduction
+
 - **Sync Mode**: Latency = max(all client delays)
 - **Async Mode**: Latency = median(client delays)
 - **Improvement**: **30-50% faster** with high variance
 
 ### Throughput Increase
+
 - **Async Mode**: ~**2x throughput** with 50% quorum
 - Fast clients contribute immediately
 - System more resilient to stragglers
 
 ### Security Overhead
+
 - Gatekeeper: +0.1ms per update
 - SABD: +5ms per update
 - Total: <1% of training time
@@ -226,6 +241,7 @@ Your multimodal components (LSTM, RNN, Gatekeeper) are already tested (6/6 passi
 The async update system is ready to use in your experiments.
 
 ### Run Experiments
+
 ```python
 from async_federated_learning.config import Config
 from async_federated_learning.experiments.run_experiments import run_all_experiments
@@ -261,6 +277,7 @@ run_all_experiments(config)
 The asynchronous update system is **fully implemented** and **production-ready**.
 
 Your requirements are satisfied:
+
 - ✅ Server doesn't wait for all clients (50% quorum)
 - ✅ Updates processed immediately when threshold reached
 - ✅ Malicious updates filtered (multi-layer security)

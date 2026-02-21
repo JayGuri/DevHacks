@@ -146,29 +146,34 @@
 ## Key Components Status
 
 ### ✅ Data Pipeline
+
 - [x] MNIST loader (60K images, 10 classes)
 - [x] Shakespeare loader (5.3M chars, 102 vocab)
 - [x] Non-IID partitioning (Dirichlet α=0.5)
 - [x] Heterogeneous client data sizes
 
 ### ✅ Models
+
 - [x] CNN (151K params) - Image classification
 - [x] LSTM (961K params) - Text prediction
 - [x] RNN (270K params) - Text prediction (baseline)
 
 ### ✅ Security Layers
+
 - [x] Gatekeeper (L2 norm inspection) - Layer 1
 - [x] Staleness Filter (age check) - Layer 2
 - [x] SABD (gradient divergence) - Layer 3
 - [x] Robust Aggregation (Trimmed Mean/Median) - Layer 4
 
 ### ✅ Async Updates
+
 - [x] Quorum-based aggregation (50% threshold)
 - [x] Immediate processing (no waiting for all)
 - [x] Mode auto-detection (client_speed_variance)
 - [x] Metrics tracking (processed, rejected, mode)
 
 ### ✅ Testing & Validation
+
 - [x] Multimodal tests (6/6 passing)
 - [x] Shakespeare loader tested (5.3M chars)
 - [x] LSTM/RNN tested (forward pass, training)
@@ -176,6 +181,7 @@
 - [x] Config tested (both modalities)
 
 ### 🔜 Next Steps
+
 - [ ] FL client text model support (route to LSTM/RNN)
 - [ ] Main.py multimodal orchestration
 - [ ] Run 6-experiment suite (E1-E6)
@@ -186,23 +192,27 @@
 ## System Capabilities
 
 ### Robustness
+
 - ✅ Byzantine-tolerant (up to 40% attackers)
 - ✅ Staleness-aware (corrects for asynchrony)
 - ✅ Network-fault tolerant (timeouts, retries)
 - ✅ Heterogeneity-aware (variable client speeds)
 
 ### Privacy
+
 - ✅ DP-SGD (gradient clipping + Gaussian noise)
 - ✅ Secure aggregation (no raw data sharing)
 - ✅ Model updates only (privacy-preserving)
 
 ### Performance
+
 - ✅ 30-50% latency reduction (async vs sync)
 - ✅ 2x throughput increase (50% quorum)
 - ✅ <1% security overhead (Gatekeeper + SABD)
 - ✅ Scalable to 100+ clients
 
 ### Multimodal Support
+
 - ✅ Image (CNN) + Text (LSTM/RNN)
 - ✅ Modality-aware routing
 - ✅ Shared server infrastructure

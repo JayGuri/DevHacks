@@ -1,16 +1,19 @@
 # Asynchronous Update Implementation
 
 ## Overview
+
 The FL server now implements **true asynchronous updates** - it processes client updates immediately when a quorum is reached, without waiting for all clients. This enables fast clients to contribute without being delayed by slow stragglers.
 
 ## Key Features
 
 ### 1. **Quorum-Based Aggregation**
+
 - **Threshold**: 50% of total clients (configurable via `min_updates_for_aggregation`)
 - **Behavior**: Server aggregates as soon as enough updates arrive
 - **Advantage**: Fast clients don't wait for slow ones; reduces round latency
 
 ### 2. **Multi-Layer Security Filtering**
+
 Client updates pass through three filtering layers before aggregation:
 
 ```
@@ -39,20 +42,23 @@ Client updates pass through three filtering layers before aggregation:
            ▼
 ┌──────────────────────────────┐
 │  Robust Aggregation          │  FedAvg/Trimmed Mean/etc.
-│  Final global model update   │  
+│  Final global model update   │
 └──────────────────────────────┘
 ```
 
 ### 3. **Async vs Sync Mode**
+
 The server automatically detects the mode based on `config.client_speed_variance`:
 
 **Async Mode** (`client_speed_variance` > 0):
+
 - Aggregates when **50% quorum** is reached
 - Fast clients contribute immediately
 - Stragglers processed in next round
 - Timeout: 30 seconds per round
 
 **Sync Mode** (`client_speed_variance` == 0):
+
 - Waits for **all clients** to respond
 - Traditional synchronous FL behavior
 - No stragglers - everyone joins before aggregation
@@ -60,12 +66,13 @@ The server automatically detects the mode based on `config.client_speed_variance
 ## Implementation Details
 
 ### Server Initialization
+
 ```python
 def __init__(self, model, config, test_dataloader, model_history, anomaly_detector, gatekeeper=None):
     # Initialize gatekeeper if enabled
     if config.use_gatekeeper:
         self.gatekeeper = gatekeeper or Gatekeeper(...)
-    
+
     # Async configuration
     self.min_updates_for_aggregation = max(1, int(config.num_clients * 0.5))  # 50% quorum
     self.aggregation_event = threading.Event()
@@ -73,11 +80,12 @@ def __init__(self, model, config, test_dataloader, model_history, anomaly_detect
 ```
 
 ### Update Reception
+
 ```python
 def receive_update(self, update: dict):
     """Enqueue client update and trigger async aggregation if quorum reached."""
     self.update_queue.put_nowait(update)
-    
+
     # Async trigger: aggregate immediately when enough updates arrive
     if self.async_mode and self.update_queue.qsize() >= self.min_updates_for_aggregation:
         self.aggregation_event.set()
@@ -85,15 +93,16 @@ def receive_update(self, update: dict):
 ```
 
 ### Aggregation Pipeline
+
 ```python
 def aggregate_pending_updates(self):
     """Drain queue, apply 3-layer filtering, aggregate clean updates."""
-    
+
     # Step 1: Drain update queue
     updates = []
     while not self.update_queue.empty():
         updates.append(self.update_queue.get_nowait())
-    
+
     # Step 2: Gatekeeper L2 filtering (Layer 1)
     gatekeeper_rejected = 0
     if self.gatekeeper:
@@ -102,45 +111,46 @@ def aggregate_pending_updates(self):
         )
         gatekeeper_rejected = len(rejected_gk)
         updates = accepted_gk  # Keep only accepted updates
-        
+
         if gatekeeper_rejected > 0:
             logger.warning(f"Gatekeeper rejected {gatekeeper_rejected} updates (L2 norm)")
-    
+
     # Step 3: Staleness filtering (Layer 2)
     valid_updates = [u for u in updates if self.global_round - u["round_id"] <= self.max_staleness]
     stale_count = len(updates) - len(valid_updates)
-    
+
     # Step 4: SABD Byzantine detection (Layer 3)
     clean_updates, byzantine_flags = self.anomaly_detector.filter_updates(valid_updates, ...)
     discarded_sabd = sum(byzantine_flags)
-    
+
     # Step 5: Robust aggregation
     if clean_updates:
         aggregated_delta = self.aggregation_fn(clean_updates, ...)
         self._apply_aggregated_delta(aggregated_delta)
-    
+
     return len(clean_updates), discarded_sabd, gatekeeper_rejected, avg_staleness
 ```
 
 ### Round Execution
+
 ```python
 def run_round(self, clients: list) -> dict:
     """Execute one global round with async or sync behavior."""
-    
+
     # Broadcast global model
     global_weights = self.get_global_weights()
     for client in clients:
         client.receive_global_model(global_weights, self.global_round)
-    
+
     # Spawn client threads
     threads = []
     for client in clients:
-        t = threading.Thread(target=lambda c: (c.simulate_network_delay(), 
-                                                c.local_train(self.global_round), 
+        t = threading.Thread(target=lambda c: (c.simulate_network_delay(),
+                                                c.local_train(self.global_round),
                                                 self.receive_update(update)))
         threads.append(t)
         t.start()
-    
+
     # Async vs Sync aggregation
     if self.async_mode:
         # ASYNC: Aggregate when quorum reached (50% clients)
@@ -152,29 +162,31 @@ def run_round(self, clients: list) -> dict:
                 break
             time.sleep(0.5)
             elapsed += 0.5
-        
+
         # Aggregate without waiting for stragglers
         processed, discarded_sabd, gatekeeper_rejected, avg_stale = self.aggregate_pending_updates()
-        
+
     else:
         # SYNC: Wait for all clients
         for t in threads:
             t.join()
         processed, discarded_sabd, gatekeeper_rejected, avg_stale = self.aggregate_pending_updates()
-    
-    return {"round": self.global_round, "processed": processed, 
+
+    return {"round": self.global_round, "processed": processed,
             "discarded_sabd": discarded_sabd, "gatekeeper_rejected": gatekeeper_rejected}
 ```
 
 ## Configuration
 
 ### Enable Async Updates
+
 ```python
 # In config.py
 client_speed_variance = 0.5  # Enable async mode (0 = sync)
 ```
 
 ### Enable Gatekeeper
+
 ```python
 # In config.py
 use_gatekeeper = True
@@ -184,6 +196,7 @@ gatekeeper_max_threshold = 1000.0    # Hard ceiling
 ```
 
 ### Quorum Threshold
+
 ```python
 # Server automatically sets to 50% of clients
 min_updates_for_aggregation = max(1, int(num_clients * 0.5))
@@ -196,15 +209,16 @@ server = AsyncFLServer(..., min_updates_for_aggregation=10)
 
 The server tracks these metrics per round:
 
-| Metric | Description |
-|--------|-------------|
-| `processed` | Number of updates aggregated successfully |
-| `discarded_sabd` | Updates rejected by SABD (Byzantine detection) |
-| `gatekeeper_rejected` | Updates rejected by Gatekeeper (L2 norm) |
-| `avg_staleness` | Average age of processed updates |
-| `mode` | "async" or "sync" |
+| Metric                | Description                                    |
+| --------------------- | ---------------------------------------------- |
+| `processed`           | Number of updates aggregated successfully      |
+| `discarded_sabd`      | Updates rejected by SABD (Byzantine detection) |
+| `gatekeeper_rejected` | Updates rejected by Gatekeeper (L2 norm)       |
+| `avg_staleness`       | Average age of processed updates               |
+| `mode`                | "async" or "sync"                              |
 
 ### Access Metrics
+
 ```python
 # Get metrics history
 history = server.metrics_history
@@ -221,6 +235,7 @@ print(f"Round {round_metrics['round']}: {round_metrics['processed']} processed, 
 ## Security Guarantees
 
 ### Defense in Depth
+
 1. **Gatekeeper** (Layer 1):
    - Blocks updates with L2 norm > μ + 3σ (adaptive)
    - Hard maximum threshold prevents extreme attacks
@@ -241,6 +256,7 @@ print(f"Round {round_metrics['round']}: {round_metrics['processed']} processed, 
    - Reputation: Weights by historical reliability
 
 ### Attack Resistance
+
 - **Label Flipping**: Caught by all layers (large gradients)
 - **Gradient Inversion**: Caught by Gatekeeper (L2 norm spikes)
 - **Model Poisoning**: Caught by SABD (drift from history)
@@ -250,16 +266,19 @@ print(f"Round {round_metrics['round']}: {round_metrics['processed']} processed, 
 ## Performance
 
 ### Latency Reduction
+
 - **Sync Mode**: `latency = max(all client delays) + aggregation_time`
 - **Async Mode**: `latency = median(client delays) + aggregation_time`
 - **Improvement**: 30-50% faster rounds with high variance
 
 ### Throughput
+
 - **Sync Mode**: `1 round / max_delay`
 - **Async Mode**: `1 round / (0.5 × avg_delay)`
 - **Improvement**: 2x throughput with 50% quorum
 
 ### Security Overhead
+
 - **Gatekeeper**: +0.1ms per update (L2 norm computation)
 - **SABD**: +5ms per update (gradient divergence analysis)
 - **Robust Aggregation**: +10ms per round (Trimmed Mean)
@@ -268,6 +287,7 @@ print(f"Round {round_metrics['round']}: {round_metrics['processed']} processed, 
 ## Testing
 
 ### Verify Async Behavior
+
 ```python
 # Test with variable client speeds
 config.client_speed_variance = 0.5  # 50% variance
@@ -286,6 +306,7 @@ print(f"Processed {metrics['processed']}/10 clients without waiting for straggle
 ```
 
 ### Verify Security Filtering
+
 ```python
 # Add Byzantine client
 byzantine = FLClient(99, attack_type="label_flip", attack_fraction=0.5)
