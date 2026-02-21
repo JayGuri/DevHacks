@@ -2,34 +2,44 @@ import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Inbox } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { memo } from "react";
+import { cn } from "@/lib/utils";
 
-export default function EmptyState({
+const EmptyState = memo(({
   icon: Icon = Inbox,
   title,
   description,
   message,
   action,
-}) {
+  className,
+}) => {
   const navigate = useNavigate();
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3 }}
-      className="flex flex-col items-center justify-center py-12 text-center"
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className={cn(
+        "flex flex-col items-center justify-center p-12 text-center rounded-2xl border border-dashed border-border/60 empty-state-bg min-h-[300px]",
+        className
+      )}
     >
-      <Icon size={48} className="text-muted-foreground/40" />
-      {title && <p className="mt-4 text-lg font-medium">{title}</p>}
+      <div className="relative">
+        <div className="absolute inset-0 blur-2xl bg-primary/5 rounded-full" />
+        <Icon size={64} className="text-muted-foreground/30 relative" strokeWidth={1.5} />
+      </div>
+      
+      {title && <h3 className="mt-6 text-xl font-display font-bold tracking-tight">{title}</h3>}
       {(description || message) && (
-        <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+        <p className="mt-2 max-w-sm text-sm text-muted-foreground leading-relaxed">
           {description || message}
         </p>
       )}
+      
       {action && (
         <Button
           variant="outline"
-          className="mt-6"
+          className="mt-8 rounded-full px-6 btn-primary-glow"
           onClick={
             action.onClick
               ? action.onClick
@@ -43,4 +53,6 @@ export default function EmptyState({
       )}
     </motion.div>
   );
-}
+});
+
+export default EmptyState;

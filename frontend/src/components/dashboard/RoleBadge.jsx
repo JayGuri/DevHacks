@@ -1,19 +1,21 @@
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { memo } from "react";
 
-export default function RoleBadge({ role }) {
+const RoleBadge = memo(({ role }) => {
   const isLead = role === "TEAM_LEAD";
 
   return (
-    <Badge
-      variant="outline"
+    <span
       className={cn(
+        "badge-custom",
         isLead
-          ? "border-cyan-500 text-cyan-600 dark:text-cyan-400"
-          : "border-border text-muted-foreground"
+          ? "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/20"
+          : "bg-muted text-muted-foreground border-border"
       )}
     >
       {isLead ? "Team Lead" : "Contributor"}
-    </Badge>
+    </span>
   );
-}
+});
+
+export default RoleBadge;

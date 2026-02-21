@@ -25,6 +25,11 @@ export const useStore = create((set) => ({
       nodesByProject: { ...s.nodesByProject, [projectId]: nodes },
     })),
 
+  setAllNodes: (projectId, nodes) =>
+    set((s) => ({
+      nodesByProject: { ...s.nodesByProject, [projectId]: nodes }
+    })),
+
   updateNode: (projectId, nodeId, patch) =>
     set((s) => {
       const nodes = s.nodesByProject[projectId] || [];

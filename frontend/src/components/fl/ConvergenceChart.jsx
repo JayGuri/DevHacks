@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, memo } from "react";
 import { motion } from "framer-motion";
 import {
   LineChart,
@@ -15,44 +15,39 @@ import EmptyState from "@/components/dashboard/EmptyState";
 import { Activity } from "lucide-react";
 
 const COLORS = {
-  fedavg: "#f43f5e",
-  trimmed: "#06b6d4",
-  median: "#f59e0b",
-  grid: "hsl(var(--border))",
+  fedavg: "hsl(var(--status-byzantine))",
+  trimmed: "hsl(var(--primary))",
+  median: "hsl(var(--status-slow))",
+  grid: "hsla(var(--border), 0.5)",
   text: "hsl(var(--muted-foreground))",
 };
 
-function LegendDot({ color, label }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span
-        className="inline-block h-2.5 w-2.5 rounded-full"
-        style={{ backgroundColor: color }}
-      />
-      <span className="mono-data text-xs text-muted-foreground">{label}</span>
-    </div>
-  );
-}
+const LegendDot = memo(({ color, label }) => (
+  <div className="flex items-center gap-2">
+    <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
+    <span className="metric-label text-[9px] opacity-70 tracking-widest">{label}</span>
+  </div>
+));
 
 const CustomDot = (props) => {
   const { cx, cy, index, dataLength } = props;
   if (index === dataLength - 1) {
     return (
-      <circle
-        cx={cx}
-        cy={cy}
-        r={4}
-        fill={COLORS.trimmed}
-        className="animate-pulse-dot"
-        style={{ filter: "drop-shadow(0 0 4px #06b6d4)" }}
-      />
+      <g>
+        <circle cx={cx} cy={cy} r={6} fill={COLORS.trimmed} fillOpacity={0.2} />
+        <circle cx={cx} cy={cy} r={3} fill={COLORS.trimmed} className="animate-pulse shadow-lg" />
+      </g>
     );
   }
   return null;
 };
 
-export default function ConvergenceChart({ rounds, viewMode }) {
-  const data = useMemo(() => rounds || [], [rounds]);
+const ConvergenceChart = memo(({ rounds, viewMode }) => {
+  // Performance: Window the data to keep chart snappy
+  const data = useMemo(() => {
+    if (!rounds) return [];
+    return rounds.slice(-40);
+  }, [rounds]);
 
   if (data.length < 2) {
     return <EmptyState icon={Activity} message="Waiting for training data…" />;
@@ -60,98 +55,94 @@ export default function ConvergenceChart({ rounds, viewMode }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3 }}
-      className="h-full w-full"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="h-full w-full flex flex-col"
     >
-      <motion.div
-        key={data.length}
-        initial={{ clipPath: "inset(0 100% 0 0)" }}
-        animate={{ clipPath: "inset(0 0% 0 0)" }}
-        transition={{ duration: 0.5, ease: "easeOut" }}
-        className="h-full w-full"
-      >
+      <div className="flex-1 min-h-0 card-base bg-card/10 backdrop-blur-[2px] p-4">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} />
+            <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} vertical={false} />
             <XAxis
               dataKey="round"
               tickFormatter={formatRound}
-              tick={{ fontSize: 10, fill: COLORS.text }}
+              tick={{ fontSize: 9, fill: COLORS.text, fontFamily: "var(--font-mono)" }}
+              axisLine={false}
+              tickLine={false}
             />
             <YAxis
               tickFormatter={(v) => v + "%"}
-              tick={{ fontSize: 10, fill: COLORS.text }}
+              tick={{ fontSize: 9, fill: COLORS.text, fontFamily: "var(--font-mono)" }}
               domain={[0, 100]}
+              axisLine={false}
+              tickLine={false}
             />
 
-            {viewMode === "simple" ? (
-              <>
-                <Tooltip formatter={(v) => formatPercent(v)} />
-                <Line
-                  dataKey="trimmedAccuracy"
-                  stroke={COLORS.trimmed}
-                  strokeWidth={2}
-                  dot={<CustomDot dataLength={data.length} />}
-                  name="Robust Accuracy"
-                  isAnimationActive={false}
-                />
-              </>
-            ) : (
-              <>
-                <Tooltip
-                  formatter={(v, name) => [formatPercent(v), name]}
-                  labelFormatter={(l) => formatRound(l)}
-                />
-                <ReferenceLine
-                  y={85}
-                  stroke={COLORS.grid}
-                  strokeDasharray="6 3"
-                  label={{
-                    value: "Target 85%",
-                    fill: COLORS.text,
-                    fontSize: 10,
-                  }}
-                />
-                <Line
-                  dataKey="fedavgAccuracy"
-                  stroke={COLORS.fedavg}
-                  strokeWidth={1.5}
-                  strokeDasharray="4 4"
-                  dot={false}
-                  name="FedAvg"
-                  isAnimationActive={false}
-                />
-                <Line
-                  dataKey="trimmedAccuracy"
-                  stroke={COLORS.trimmed}
-                  strokeWidth={2}
-                  dot={<CustomDot dataLength={data.length} />}
-                  name="Trimmed Mean"
-                  isAnimationActive={false}
-                />
-                <Line
-                  dataKey="medianAccuracy"
-                  stroke={COLORS.median}
-                  strokeWidth={2}
-                  dot={false}
-                  name="Coord. Median"
-                  isAnimationActive={false}
-                />
-              </>
+            <Tooltip 
+              contentStyle={{ backgroundColor: "hsl(var(--card))", borderRadius: "12px", border: "1px solid hsl(var(--border))" }}
+              itemStyle={{ fontFamily: "var(--font-mono)", fontSize: "10px" }}
+              labelStyle={{ fontFamily: "var(--font-mono)", fontSize: "11px", fontWeight: "bold" }}
+              formatter={(v) => [formatPercent(v), "ACCURACY"]}
+              labelFormatter={(l) => `ROUND: ${l}`}
+            />
+
+            {viewMode !== "simple" && (
+              <ReferenceLine
+                y={85}
+                stroke={COLORS.grid}
+                strokeDasharray="6 3"
+                label={{
+                  value: "TARGET 85%",
+                  fill: COLORS.text,
+                  fontSize: 8,
+                  fontFamily: "var(--font-mono)",
+                  position: "insideBottomRight"
+                }}
+              />
             )}
+
+            <Line
+              dataKey="fedavgAccuracy"
+              stroke={COLORS.fedavg}
+              strokeWidth={1.5}
+              strokeDasharray="4 4"
+              dot={false}
+              name="FedAvg (Baseline)"
+              isAnimationActive={false}
+              hide={viewMode === "simple"}
+            />
+            
+            <Line
+              dataKey="medianAccuracy"
+              stroke={COLORS.median}
+              strokeWidth={1.5}
+              dot={false}
+              name="Median (Robust)"
+              isAnimationActive={false}
+              hide={viewMode === "simple"}
+            />
+
+            <Line
+              dataKey="trimmedAccuracy"
+              stroke={COLORS.trimmed}
+              strokeWidth={2.5}
+              dot={<CustomDot dataLength={data.length} />}
+              name="Trimmed Mean (Active)"
+              isAnimationActive={false}
+            />
           </LineChart>
         </ResponsiveContainer>
-      </motion.div>
+      </div>
 
       {viewMode === "detailed" && (
-        <div className="mt-2 flex flex-wrap gap-4">
-          <LegendDot color={COLORS.fedavg} label="FedAvg (no defence)" />
-          <LegendDot color={COLORS.trimmed} label="Trimmed Mean" />
-          <LegendDot color={COLORS.median} label="Coord. Median" />
+        <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2 px-1">
+          <LegendDot color={COLORS.fedavg} label="FEDAVG BASELINE" />
+          <LegendDot color={COLORS.median} label="COORD. MEDIAN" />
+          <LegendDot color={COLORS.trimmed} label="ACTIVE AGGREGATOR" />
         </div>
       )}
     </motion.div>
   );
-}
+});
+
+export default ConvergenceChart;

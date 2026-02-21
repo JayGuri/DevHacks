@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { useStore } from "@/lib/store";
 import {
@@ -18,29 +18,28 @@ const NULL_FL = {
   isRunning: false,
   currentRound: 0,
   totalRounds: 50,
-  blockNode: () => {},
-  unblockNode: () => {},
-  setAggregationMethod: () => {},
-  pause: () => {},
-  resume: () => {},
+  blockNode: () => { },
+  unblockNode: () => { },
+  setAggregationMethod: () => { },
+  pause: () => { },
+  resume: () => { },
 };
 
 export default function useFL(projectId) {
   const nodesByProject = useStore((s) => s.nodesByProject);
   const roundsByProject = useStore((s) => s.roundsByProject);
-  const updateNode = useStore((s) => s.updateNode);
   const setNodes = useStore((s) => s.setNodes);
+  const setAllNodes = useStore((s) => s.setAllNodes); // Make sure this is in store.js
   const appendRound = useStore((s) => s.appendRound);
   const setMethod = useStore((s) => s.setMethod);
-  const methodByProject = useStore((s) => s.methodByProject);
   const pushActivity = useStore((s) => s.pushActivity);
   const storeBlockNode = useStore((s) => s.blockNode);
   const storeUnblockNode = useStore((s) => s.unblockNode);
   const pushNotification = useStore((s) => s.pushNotification);
 
-  const nodes = nodesByProject[projectId] || [];
-  const allRounds = roundsByProject[projectId] || [];
-  const project = MOCK_PROJECTS.find((p) => p.id === projectId);
+  const nodes = useMemo(() => nodesByProject[projectId] || [], [nodesByProject, projectId]);
+  const allRounds = useMemo(() => roundsByProject[projectId] || [], [roundsByProject, projectId]);
+  const project = useMemo(() => MOCK_PROJECTS.find((p) => p.id === projectId), [projectId]);
 
   const [currentRound, setCurrentRound] = useState(0);
   const [isRunning, setIsRunning] = useState(true);
@@ -49,14 +48,12 @@ export default function useFL(projectId) {
   const intervalRef = useRef(null);
   const currentRoundRef = useRef(0);
   const ganttBlocksRef = useRef([]);
-  // Keep a fresh snapshot of nodes accessible inside the interval callback
   const nodesRef = useRef(nodes);
 
   useEffect(() => {
     nodesRef.current = nodes;
   }, [nodes]);
 
-  // Seed nodes and initial rounds on first mount
   useEffect(() => {
     if (!project || !projectId) return;
 
@@ -73,110 +70,79 @@ export default function useFL(projectId) {
       setCurrentRound(20);
       currentRoundRef.current = 20;
     } else {
-      // Resume from where we left off
       const lastRound = existingRounds[existingRounds.length - 1]?.round || 0;
       setCurrentRound(lastRound);
       currentRoundRef.current = lastRound;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [projectId, project, setNodes, appendRound]);
 
-  // Tick function extracted so it can be referenced cleanly
   const tick = useCallback(() => {
     const round = currentRoundRef.current + 1;
     currentRoundRef.current = round;
     setCurrentRound(round);
 
-    const currentNodes = nodesRef.current;
+    const currentNodes = [...nodesRef.current];
+    let hasChanges = false;
+    const newGanttBlocks = [...ganttBlocksRef.current];
 
-    currentNodes.forEach((node, index) => {
-      if (node.isBlocked) return;
+    const updatedNodes = currentNodes.map((node, index) => {
+      if (node.isBlocked) return node;
+      hasChanges = true;
 
-      const patch = {};
+      const patch = { ...node };
 
       if (node.isByzantine) {
-        patch.trust = clampVal(
-          node.trust + randomBetween(-0.04, 0.01),
-          0.02,
-          0.28
-        );
-        patch.cosineDistance = clampVal(
-          node.cosineDistance + randomBetween(-0.05, 0.09),
-          0.5,
-          0.98
-        );
+        patch.trust = clampVal(node.trust + randomBetween(-0.04, 0.01), 0.02, 0.28);
+        patch.cosineDistance = clampVal(node.cosineDistance + randomBetween(-0.05, 0.09), 0.5, 0.98);
       } else if (node.isSlow) {
-        patch.trust = clampVal(
-          node.trust + randomBetween(-0.01, 0.03),
-          0.55,
-          0.95
-        );
-        patch.cosineDistance = clampVal(
-          node.cosineDistance + randomBetween(-0.02, 0.02),
-          0.01,
-          0.18
-        );
-        patch.staleness = clampVal(
-          node.staleness + (Math.random() < 0.4 ? 1 : -1),
-          0,
-          9
-        );
+        patch.trust = clampVal(node.trust + randomBetween(-0.01, 0.03), 0.55, 0.95);
+        patch.cosineDistance = clampVal(node.cosineDistance + randomBetween(-0.02, 0.02), 0.01, 0.18);
+        patch.staleness = clampVal(node.staleness + (Math.random() < 0.4 ? 1 : -1), 0, 9);
       } else {
-        patch.trust = clampVal(
-          node.trust + randomBetween(-0.01, 0.02),
-          0.72,
-          1.0
-        );
-        patch.cosineDistance = clampVal(
-          node.cosineDistance + randomBetween(-0.015, 0.015),
-          0.01,
-          0.12
-        );
+        patch.trust = clampVal(node.trust + randomBetween(-0.01, 0.02), 0.72, 1.0);
+        patch.cosineDistance = clampVal(node.cosineDistance + randomBetween(-0.015, 0.015), 0.01, 0.12);
         patch.staleness = Math.random() < 0.1 ? 1 : 0;
       }
 
-      // Auto-flag nodes drifting beyond cosine threshold
-      if (patch.cosineDistance > 0.45 && !node.isBlocked) {
-        if (node.status !== "BYZANTINE") {
-          useStore.getState().pushNotification({
-            type: "alert",
-            message: `Node ${node.displayId} flagged as Byzantine in ${project?.name || projectId}`,
-            projectId,
-          });
-        }
+      if (patch.cosineDistance > 0.45 && node.status !== "BYZANTINE") {
+        pushNotification({
+          type: "alert",
+          message: `Node ${node.displayId} flagged as Byzantine in ${project?.name || projectId}`,
+          projectId,
+        });
         patch.status = "BYZANTINE";
       }
 
       patch.roundsContributed = (node.roundsContributed || 0) + 1;
-      updateNode(projectId, node.nodeId, patch);
 
-      // Gantt block for timeline visualisation
+      // Update GanttRef
       const nowSec = Date.now() / 1000;
-      const duration = node.isSlow
-        ? randomBetween(2.5, 5)
-        : randomBetween(0.4, 1.5);
-      ganttBlocksRef.current = [
-        ...ganttBlocksRef.current,
-        {
-          nodeId: node.nodeId,
-          displayId: node.displayId,
-          clientIdx: index,
-          startSec: nowSec - duration,
-          endSec: nowSec,
-          isByzantine: node.isByzantine,
-          isSlow: node.isSlow,
-        },
-      ].slice(-40);
+      const duration = node.isSlow ? randomBetween(2.5, 5) : randomBetween(0.4, 1.5);
+      newGanttBlocks.push({
+        nodeId: node.nodeId,
+        displayId: node.displayId,
+        clientIdx: index,
+        startSec: nowSec - duration,
+        endSec: nowSec,
+        isByzantine: node.isByzantine,
+        isSlow: node.isSlow,
+      });
+
+      return patch;
     });
+
+    if (hasChanges) {
+      setAllNodes(projectId, updatedNodes);
+      ganttBlocksRef.current = newGanttBlocks.slice(-40);
+    }
 
     appendRound(projectId, generateRoundMetrics(round));
 
     if (round % 5 === 0) {
       setAggTriggerTimes((prev) => [...prev.slice(-12), Date.now() / 1000]);
     }
-  }, [projectId, updateNode, appendRound]);
+  }, [projectId, setAllNodes, appendRound, project?.name, pushNotification]);
 
-  // Start / stop the simulation interval
   useEffect(() => {
     if (!projectId) return;
     if (isRunning) {
@@ -185,7 +151,7 @@ export default function useFL(projectId) {
       clearInterval(intervalRef.current);
     }
     return () => clearInterval(intervalRef.current);
-  }, [isRunning, tick]);
+  }, [isRunning, tick, projectId]);
 
   const blockNode = useCallback(
     (nodeId) => {
@@ -226,22 +192,34 @@ export default function useFL(projectId) {
     [projectId, storeUnblockNode, pushActivity]
   );
 
-  if (!projectId) return NULL_FL;
-
-  return {
+  return useMemo(() => {
+    if (!projectId) return NULL_FL;
+    return {
+      project,
+      nodes,
+      latestRound: allRounds[allRounds.length - 1] || null,
+      allRounds,
+      ganttBlocks: ganttBlocksRef.current,
+      aggTriggerTimes,
+      isRunning,
+      currentRound,
+      totalRounds: project?.config?.numRounds || 50,
+      blockNode,
+      unblockNode,
+      setAggregationMethod: (method) => setMethod(projectId, method),
+      pause: () => setIsRunning(false),
+      resume: () => setIsRunning(true),
+    };
+  }, [
+    projectId,
     project,
     nodes,
-    latestRound: allRounds[allRounds.length - 1] || null,
     allRounds,
-    ganttBlocks: ganttBlocksRef.current,
     aggTriggerTimes,
     isRunning,
     currentRound,
-    totalRounds: project?.config?.numRounds || 50,
     blockNode,
     unblockNode,
-    setAggregationMethod: (method) => setMethod(projectId, method),
-    pause: () => setIsRunning(false),
-    resume: () => setIsRunning(true),
-  };
+    setMethod,
+  ]);
 }

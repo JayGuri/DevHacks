@@ -1,7 +1,6 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn, getTrustBg, formatPercent } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import AnimatedNumber from "@/components/ui/AnimatedNumber";
@@ -17,58 +16,58 @@ import ConfirmDialog from "@/components/dashboard/ConfirmDialog";
 
 const FILTERS = ["All", "Honest", "Slow", "Byzantine", "Blocked"];
 
-function statusBadge(status) {
+const statusBadge = (status) => {
   const map = {
-    ACTIVE: "border-emerald-500 text-emerald-600 dark:text-emerald-400",
-    SLOW: "border-amber-500 text-amber-600 dark:text-amber-400",
-    BYZANTINE: "border-rose-500 text-rose-600 dark:text-rose-400",
-    BLOCKED: "border-muted-foreground text-muted-foreground",
+    ACTIVE: "badge-active",
+    SLOW: "badge-slow",
+    BYZANTINE: "badge-byzantine",
+    BLOCKED: "badge-blocked",
   };
   return (
-    <Badge variant="outline" className={map[status] || ""}>
+    <span className={cn(map[status] || "badge-custom")}>
       {status}
-    </Badge>
+    </span>
   );
-}
+};
 
-function typeLabel(node) {
-  if (node.isByzantine) return <span className="text-rose-500">Byzantine</span>;
-  if (node.isSlow) return <span className="text-amber-500">Slow</span>;
-  return <span className="text-emerald-500">Honest</span>;
-}
+const typeLabel = (node) => {
+  if (node.isByzantine) return <span className="text-rose-500 font-mono text-[11px] font-bold">BYZANTINE</span>;
+  if (node.isSlow) return <span className="text-amber-500 font-mono text-[11px] font-bold">SLOW</span>;
+  return <span className="text-emerald-500 font-mono text-[11px] font-bold">HONEST</span>;
+};
 
-function trustIndicatorClass(trust) {
-  if (trust >= 0.7) return "bg-emerald-500";
-  if (trust >= 0.4) return "bg-amber-500";
-  return "bg-rose-500";
-}
+const trustIndicatorClass = (trust) => {
+  if (trust >= 0.7) return "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]";
+  if (trust >= 0.4) return "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.4)]";
+  return "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]";
+};
 
-function filterNodes(nodes, filter) {
+const filterNodes = (nodes, filter) => {
   if (filter === "All") return nodes;
   if (filter === "Honest") return nodes.filter((n) => !n.isByzantine && !n.isSlow && !n.isBlocked);
   if (filter === "Slow") return nodes.filter((n) => n.isSlow && !n.isBlocked);
   if (filter === "Byzantine") return nodes.filter((n) => n.isByzantine && !n.isBlocked);
   if (filter === "Blocked") return nodes.filter((n) => n.isBlocked);
   return nodes;
-}
+};
 
-function StatPill({ color, count, label }) {
-  return (
-    <div className="flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5">
-      <span className={cn("h-2.5 w-2.5 rounded-full", color)} />
-      <span className="font-display text-lg font-bold">{count}</span>
-      <span className="metric-label text-muted-foreground">{label}</span>
+const StatPill = memo(({ color, count, label }) => (
+  <div className="flex items-center gap-3 rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm px-4 py-2 card-elevated">
+    <div className={cn("h-2 w-2 rounded-full animate-pulse", color)} />
+    <div className="flex flex-col">
+      <span className="metric-value text-xl leading-none">{count}</span>
+      <span className="metric-label opacity-60 mt-1">{label}</span>
     </div>
-  );
-}
+  </div>
+));
 
-export default function NodeMatrix({
+const NodeMatrix = memo(({
   nodes,
   viewMode,
   isAdmin,
   onBlock,
   onUnblock,
-}) {
+}) => {
   const [filter, setFilter] = useState("All");
 
   const counts = {
@@ -87,7 +86,7 @@ export default function NodeMatrix({
       transition={{ duration: 0.3 }}
     >
       {viewMode === "simple" ? (
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-4">
           <StatPill color="bg-emerald-500" count={counts.active} label="Active" />
           <StatPill color="bg-amber-500" count={counts.slow} label="Slow" />
           <StatPill color="bg-rose-500" count={counts.byzantine} label="Byzantine" />
@@ -95,16 +94,16 @@ export default function NodeMatrix({
         </div>
       ) : (
         <>
-          <div className="mb-4 flex flex-wrap gap-2">
+          <div className="mb-6 flex flex-wrap gap-2">
             {FILTERS.map((f) => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
                 className={cn(
-                  "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                  "rounded-full px-4 py-1.5 text-[11px] font-mono tracking-wider uppercase transition-all duration-200 border",
                   filter === f
-                    ? "border border-primary/30 bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-accent"
+                    ? "bg-primary text-primary-foreground border-primary shadow-lg shadow-primary/20"
+                    : "bg-card text-muted-foreground border-border hover:border-primary/50"
                 )}
               >
                 {f}
@@ -112,17 +111,17 @@ export default function NodeMatrix({
             ))}
           </div>
 
-          <div className="overflow-x-auto rounded-md border border-border">
+          <div className="card-base overflow-hidden">
             <Table>
-              <TableHeader>
+              <TableHeader className="table-header">
                 <TableRow>
-                  <TableHead>Node</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Trust</TableHead>
-                  <TableHead>Cos. Dist</TableHead>
+                  <TableHead>Node ID</TableHead>
+                  <TableHead>Entity Type</TableHead>
+                  <TableHead>Reputation Trust</TableHead>
+                  <TableHead>Cos. Entropy</TableHead>
                   <TableHead>Staleness</TableHead>
-                  <TableHead>Status</TableHead>
-                  {isAdmin && <TableHead>Action</TableHead>}
+                  <TableHead>Operational Status</TableHead>
+                  {isAdmin && <TableHead className="text-right">Orchestration</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -145,9 +144,9 @@ export default function NodeMatrix({
       )}
     </motion.div>
   );
-}
+});
 
-function NodeRow({ node, index, isAdmin, onBlock, onUnblock }) {
+const NodeRow = memo(({ node, index, isAdmin, onBlock, onUnblock }) => {
   const prevNodeRef = useRef(node);
   const [flashClass, setFlashClass] = useState("");
   const [statusPulse, setStatusPulse] = useState("");
@@ -170,91 +169,89 @@ function NodeRow({ node, index, isAdmin, onBlock, onUnblock }) {
   return (
     <motion.tr
       layout
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.95, x: -20 }}
-      transition={{ duration: 0.2 }}
+      initial={{ opacity: 0, x: -10 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, scale: 0.98, transition: { duration: 0.15 } }}
       className={cn(
-        "border-b border-border transition-colors",
-        node.isByzantine && !node.isBlocked && "bg-rose-500/5",
-        node.isBlocked && "opacity-50",
+        "table-row group h-16",
+        node.isByzantine && !node.isBlocked && "bg-rose-500/[0.02]",
+        node.isBlocked && "opacity-40 grayscale",
         flashClass,
         statusPulse
       )}
     >
-      <TableCell className="mono-data font-medium">
+      <TableCell className="mono-data font-bold text-primary/80">
         {node.displayId}
       </TableCell>
       <TableCell>{typeLabel(node)}</TableCell>
       <TableCell>
-        <div className="w-24 space-y-1">
+        <div className="w-32 space-y-1.5">
           <Progress
             value={node.trust * 100}
-            className="h-1.5"
-            indicatorClassName={trustIndicatorClass(node.trust)}
+            className="h-1 bg-muted rounded-full overflow-hidden"
+            indicatorClassName={cn("transition-all duration-500", trustIndicatorClass(node.trust))}
           />
-          <div className="mono-data text-xs text-muted-foreground">
-            <AnimatedNumber value={node.trust * 100} decimals={1} suffix="%" />
+          <div className="mono-data text-[10px] text-muted-foreground flex justify-between items-center pr-2">
+            <span>SCORE</span>
+            <AnimatedNumber value={node.trust * 100} decimals={2} suffix="%" />
           </div>
         </div>
       </TableCell>
       <TableCell
         className={cn(
-          "mono-data text-sm",
+          "mono-data text-xs font-semibold",
           node.cosineDistance > 0.45
             ? "text-rose-500"
-            : "text-muted-foreground"
+            : "text-muted-foreground opacity-80"
         )}
       >
-        <AnimatedNumber value={node.cosineDistance} decimals={3} />
+        <AnimatedNumber value={node.cosineDistance} decimals={4} />
       </TableCell>
       <TableCell>
-        <Badge variant="outline">{node.staleness}R</Badge>
+        <span className="mono-data text-[11px] bg-muted/50 px-2 py-0.5 rounded border border-border/40">
+          {node.staleness}R
+        </span>
       </TableCell>
       <TableCell>
         <motion.div
-          animate={statusPulse ? { scale: [1, 1.2, 1] } : {}}
+          animate={statusPulse ? { scale: [1, 1.15, 1] } : {}}
           transition={{ duration: 0.4 }}
         >
           {statusBadge(node.status)}
         </motion.div>
       </TableCell>
       {isAdmin && (
-        <TableCell>
+        <TableCell className="text-right">
           {node.isBlocked ? (
             <ConfirmDialog
               trigger={
-                <Button size="sm" variant="ghost">
-                  Unblock
+                <Button size="sm" variant="ghost" className="h-8 text-[11px] metric-label text-cyan-600 hover:text-cyan-700 hover:bg-cyan-500/10 rounded-full">
+                  Unblock Entity
                 </Button>
               }
-              title="Unblock Node"
-              description={`Restore ${node.displayId} to active participation?`}
-              actionLabel="Unblock"
+              title="Restore Participation"
+              description={`Re-integrate ${node.displayId} into the training federation? Trust scores will resume calculation.`}
+              actionLabel="Confirm Restore"
               onConfirm={() => onUnblock(node.nodeId)}
             />
           ) : (
             <ConfirmDialog
               trigger={
-                <div className="relative">
-                   {node.isBlocked && <div className="absolute inset-0 bg-rose-500/20 animate-pulse rounded-md" />}
-                   <Button size="sm" variant="outline">
-                    Block
-                  </Button>
-                </div>
+                <Button size="sm" variant="outline" className="h-8 text-[11px] metric-label border-rose-500/20 text-rose-600 hover:bg-rose-500/5 rounded-full px-4">
+                  Sanction Node
+                </Button>
               }
-              title="Block Node"
-              description={`Remove ${node.displayId} from training? This node will stop contributing updates.`}
-              actionLabel="Block"
+              title="Isolate Byzantine Entity"
+              description={`Revoke all training privileges for ${node.displayId}? This will immediately discard its gradients from the aggregation buffer.`}
+              actionLabel="Apply Sanction"
               variant="destructive"
-              onConfirm={() => {
-                // Brief flash before blocking is handled by exit animation
-                onBlock(node.nodeId);
-              }}
+              onConfirm={() => onBlock(node.nodeId)}
             />
           )}
         </TableCell>
       )}
     </motion.tr>
   );
-}
+});
+
+export default NodeMatrix;

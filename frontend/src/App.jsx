@@ -16,6 +16,7 @@ import AdminUsers from "@/pages/admin/AdminUsers";
 import JoinRequests from "@/pages/admin/JoinRequests";
 import ProtectedRoute from "@/components/auth/ProtectedRoute";
 import CommandPalette from "@/components/layout/CommandPalette";
+import ErrorBoundary from "@/components/ui/ErrorBoundary";
 
 function AnimatedPage({ children }) {
   return (
@@ -34,7 +35,6 @@ export default function App() {
   const location = useLocation();
   const [paletteOpen, setPaletteOpen] = useState(false);
 
-  // Global Ctrl+K / Cmd+K shortcut
   useEffect(() => {
     function handleKeyDown(e) {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -43,7 +43,6 @@ export default function App() {
       }
     }
     document.addEventListener("keydown", handleKeyDown);
-    // Also listen for the custom event fired by the TopNav hint button
     function handleCustomEvent() {
       setPaletteOpen(true);
     }
@@ -58,93 +57,95 @@ export default function App() {
     <>
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
 
-      <AnimatePresence mode="wait">
-        <Routes location={location} key={location.pathname}>
-          {/* Public */}
-          <Route path="/" element={<Navigate to="/login" replace />} />
-          <Route path="/login" element={<AnimatedPage><Login /></AnimatedPage>} />
-          <Route path="/signup" element={<AnimatedPage><Signup /></AnimatedPage>} />
+      <ErrorBoundary>
+        <AnimatePresence mode="wait">
+          <Routes location={location} key={location.pathname}>
+            {/* Public */}
+            <Route path="/" element={<Navigate to="/login" replace />} />
+            <Route path="/login" element={<AnimatedPage><Login /></AnimatedPage>} />
+            <Route path="/signup" element={<AnimatedPage><Signup /></AnimatedPage>} />
 
-          {/* Dashboard — any authenticated user */}
-          <Route
-            path="/dashboard/overview"
-            element={
-              <ProtectedRoute>
-                <AnimatedPage><Overview /></AnimatedPage>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/dashboard/projects"
-            element={
-              <ProtectedRoute>
-                <AnimatedPage><Projects /></AnimatedPage>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/dashboard/projects/:id"
-            element={
-              <ProtectedRoute>
-                <AnimatedPage><ProjectDetail /></AnimatedPage>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/dashboard/profile"
-            element={
-              <ProtectedRoute>
-                <AnimatedPage><Profile /></AnimatedPage>
-              </ProtectedRoute>
-            }
-          />
+            {/* Dashboard */}
+            <Route
+              path="/dashboard/overview"
+              element={
+                <ProtectedRoute>
+                  <AnimatedPage><Overview /></AnimatedPage>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/projects"
+              element={
+                <ProtectedRoute>
+                  <AnimatedPage><Projects /></AnimatedPage>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/projects/:id"
+              element={
+                <ProtectedRoute>
+                  <AnimatedPage><ProjectDetail /></AnimatedPage>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/profile"
+              element={
+                <ProtectedRoute>
+                  <AnimatedPage><Profile /></AnimatedPage>
+                </ProtectedRoute>
+              }
+            />
 
-          {/* Admin — TEAM_LEAD only */}
-          <Route
-            path="/admin/overview"
-            element={
-              <ProtectedRoute requiredRole="TEAM_LEAD">
-                <AnimatedPage><AdminOverview /></AnimatedPage>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin/projects"
-            element={
-              <ProtectedRoute requiredRole="TEAM_LEAD">
-                <AnimatedPage><AdminProjects /></AnimatedPage>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin/projects/:id"
-            element={
-              <ProtectedRoute requiredRole="TEAM_LEAD">
-                <AnimatedPage><AdminProjectDetail /></AnimatedPage>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin/users"
-            element={
-              <ProtectedRoute requiredRole="TEAM_LEAD">
-                <AnimatedPage><AdminUsers /></AnimatedPage>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin/requests"
-            element={
-              <ProtectedRoute requiredRole="TEAM_LEAD">
-                <AnimatedPage><JoinRequests /></AnimatedPage>
-              </ProtectedRoute>
-            }
-          />
+            {/* Admin */}
+            <Route
+              path="/admin/overview"
+              element={
+                <ProtectedRoute requiredRole="TEAM_LEAD">
+                  <AnimatedPage><AdminOverview /></AnimatedPage>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/projects"
+              element={
+                <ProtectedRoute requiredRole="TEAM_LEAD">
+                  <AnimatedPage><AdminProjects /></AnimatedPage>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/projects/:id"
+              element={
+                <ProtectedRoute requiredRole="TEAM_LEAD">
+                  <AnimatedPage><AdminProjectDetail /></AnimatedPage>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/users"
+              element={
+                <ProtectedRoute requiredRole="TEAM_LEAD">
+                  <AnimatedPage><AdminUsers /></AnimatedPage>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/requests"
+              element={
+                <ProtectedRoute requiredRole="TEAM_LEAD">
+                  <AnimatedPage><JoinRequests /></AnimatedPage>
+                </ProtectedRoute>
+              }
+            />
 
-          {/* Catch-all */}
-          <Route path="*" element={<AnimatedPage><NotFound /></AnimatedPage>} />
-        </Routes>
-      </AnimatePresence>
+            {/* Catch-all */}
+            <Route path="*" element={<AnimatedPage><NotFound /></AnimatedPage>} />
+          </Routes>
+        </AnimatePresence>
+      </ErrorBoundary>
     </>
   );
 }

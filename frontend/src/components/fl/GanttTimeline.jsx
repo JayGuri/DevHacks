@@ -1,46 +1,47 @@
-import { useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect, useCallback, memo } from "react";
 import { motion } from "framer-motion";
 
 const PALETTE = {
   dark: {
-    bg: "#0a0f1e",
-    grid: "#1e2d47",
-    text: "#64748b",
+    bg: "transparent",
+    grid: "rgba(255,255,255,0.06)",
+    text: "rgba(148,163,184,0.6)",
     honest: "#06b6d4",
     slow: "#f59e0b",
     byz: "#f43f5e",
-    agg: "#f59e0b",
+    agg: "#06b6d4",
   },
   light: {
-    bg: "#f8fafc",
-    grid: "#e2e8f0",
-    text: "#94a3b8",
+    bg: "transparent",
+    grid: "rgba(0,0,0,0.06)",
+    text: "rgba(100,116,139,0.5)",
     honest: "#0891b2",
     slow: "#d97706",
     byz: "#e11d48",
-    agg: "#d97706",
+    agg: "#0891b2",
   },
 };
 
-function getColors() {
+const getColors = () => {
   const isDark = document.documentElement.classList.contains("dark");
   return isDark ? PALETTE.dark : PALETTE.light;
-}
+};
 
-function nodeColor(node, colors) {
+const nodeColor = (node, colors) => {
   if (node.isByzantine) return colors.byz;
   if (node.isSlow) return colors.slow;
   return colors.honest;
-}
+};
 
-export default function GanttTimeline({
+const GanttTimeline = memo(({
   ganttBlocks,
   aggTriggerTimes,
   nodes,
   viewMode,
-}) {
+}) => {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
+  const requestRef = useRef(null);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -50,29 +51,27 @@ export default function GanttTimeline({
 
     const NOW = Date.now() / 1000;
     const WINDOW = 60;
-    const LEFT_PAD = 72;
-    const BOT_PAD = 28;
+    const LEFT_PAD = 80;
+    const BOT_PAD = 32;
     const TOP_PAD = 16;
     const numNodes = nodes.length || 10;
-    const chartW = canvas.width - LEFT_PAD - 10;
+    const chartW = canvas.width - LEFT_PAD - 12;
     const rowH = (canvas.height - TOP_PAD - BOT_PAD) / numNodes;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = colors.bg;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Alternating row stripes
+    // Row backgrounds
     for (let i = 0; i < numNodes; i++) {
       if (i % 2 === 0) {
-        ctx.fillStyle = colors.grid + "22";
+        ctx.fillStyle = colors.grid;
         ctx.fillRect(LEFT_PAD, TOP_PAD + i * rowH, chartW, rowH);
       }
     }
 
-    // Vertical grid lines every 10s
+    // Vertical grid lines
     ctx.strokeStyle = colors.grid;
-    ctx.lineWidth = 0.5;
-    ctx.font = "10px monospace";
+    ctx.lineWidth = 1;
+    ctx.font = "bold 9px var(--font-mono)";
     ctx.fillStyle = colors.text;
     for (let t = 0; t <= WINDOW; t += 10) {
       const x = LEFT_PAD + (t / WINDOW) * chartW;
@@ -80,15 +79,19 @@ export default function GanttTimeline({
       ctx.moveTo(x, TOP_PAD);
       ctx.lineTo(x, canvas.height - BOT_PAD);
       ctx.stroke();
-      ctx.fillText(`-${WINDOW - t}s`, x - 10, canvas.height - BOT_PAD + 14);
+      if (t < WINDOW) {
+        ctx.fillText(`-${WINDOW - t}S`, x - 10, canvas.height - BOT_PAD + 16);
+      } else {
+        ctx.fillText("NOW", x - 10, canvas.height - BOT_PAD + 16);
+      }
     }
 
-    // Node labels on left
-    ctx.font = "10px monospace";
+    // Node labels
+    ctx.font = "bold 10px var(--font-mono)";
     nodes.forEach((node, i) => {
-      const y = TOP_PAD + i * rowH + rowH / 2 + 3;
+      const y = TOP_PAD + i * rowH + rowH / 2 + 4;
       ctx.fillStyle = nodeColor(node, colors);
-      ctx.fillText(node.displayId, 4, y);
+      ctx.fillText(node.displayId, 12, y);
     });
 
     // Gantt blocks
@@ -107,8 +110,8 @@ export default function GanttTimeline({
 
       const clampedX0 = Math.max(x0, LEFT_PAD);
       const clampedX1 = Math.min(x1, LEFT_PAD + chartW);
-      const y = TOP_PAD + rowIdx * rowH + 2;
-      const h = rowH - 4;
+      const y = TOP_PAD + rowIdx * rowH + 3;
+      const h = Math.max(rowH - 6, 2);
 
       const color = block.isByzantine
         ? colors.byz
@@ -116,12 +119,11 @@ export default function GanttTimeline({
           ? colors.slow
           : colors.honest;
 
-      ctx.fillStyle = color + "40";
+      ctx.fillStyle = color + "25";
       ctx.fillRect(clampedX0, y, clampedX1 - clampedX0, h);
 
       ctx.fillStyle = color;
       ctx.fillRect(clampedX0, y, 2, h);
-      ctx.fillRect(clampedX1 - 2, y, 2, h);
     });
 
     // Aggregation trigger lines
@@ -130,24 +132,20 @@ export default function GanttTimeline({
       if (x < LEFT_PAD || x > LEFT_PAD + chartW) return;
 
       ctx.save();
-      ctx.shadowColor = colors.agg;
-      ctx.shadowBlur = 6;
       ctx.strokeStyle = colors.agg;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(x, TOP_PAD);
       ctx.lineTo(x, canvas.height - BOT_PAD);
       ctx.stroke();
-      ctx.setLineDash([]);
       ctx.restore();
 
       ctx.fillStyle = colors.agg;
-      ctx.font = "10px sans-serif";
-      ctx.fillText("▼", x - 4, TOP_PAD - 2);
+      ctx.fillText("▼", x - 4, TOP_PAD - 4);
     });
 
-    // Axes
+    // Axis line
     ctx.strokeStyle = colors.grid;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -157,7 +155,6 @@ export default function GanttTimeline({
     ctx.stroke();
   }, [ganttBlocks, aggTriggerTimes, nodes]);
 
-  // Resize canvas to container
   const resizeCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
@@ -170,7 +167,6 @@ export default function GanttTimeline({
     canvas.style.height = rect.height + "px";
     const ctx = canvas.getContext("2d");
     ctx.scale(dpr, dpr);
-    // Reset scale for draw — we draw in CSS pixels
     canvas.width = rect.width;
     canvas.height = rect.height;
     draw();
@@ -185,12 +181,15 @@ export default function GanttTimeline({
     return () => ro.disconnect();
   }, [resizeCanvas]);
 
-  // Redraw whenever data changes
   useEffect(() => {
-    draw();
+    const scheduleDraw = () => {
+      draw();
+      requestRef.current = requestAnimationFrame(scheduleDraw);
+    };
+    requestRef.current = requestAnimationFrame(scheduleDraw);
+    return () => cancelAnimationFrame(requestRef.current);
   }, [draw]);
 
-  // Redraw on theme changes
   useEffect(() => {
     const observer = new MutationObserver(draw);
     observer.observe(document.documentElement, {
@@ -204,34 +203,35 @@ export default function GanttTimeline({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3 }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
       className="flex h-full w-full flex-col"
     >
-      <div ref={containerRef} className="flex-1">
+      <div ref={containerRef} className="flex-1 card-base bg-card/10 backdrop-blur-[2px] overflow-hidden">
         <canvas ref={canvasRef} className="h-full w-full" />
       </div>
 
       {viewMode === "detailed" && (
-        <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full bg-[#06b6d4]" />
-            Honest
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full bg-[#f59e0b]" />
-            Slow
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-2.5 rounded-full bg-[#f43f5e]" />
-            Byzantine
-          </span>
-          <span className="mono-data ml-auto">
-            Aggregations: {aggCount}
-          </span>
+        <div className="mt-3 flex flex-wrap items-center gap-4 text-[10px] font-mono tracking-wider uppercase opacity-60">
+          <div className="flex items-center gap-1.5">
+            <div className="h-2 w-2 rounded-full bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.4)]" />
+            <span>Honest Node</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="h-2 w-2 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.4)]" />
+            <span>Late Latency</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="h-2 w-2 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]" />
+            <span>Distortion</span>
+          </div>
+          <div className="ml-auto text-primary font-bold">
+            Buffered Agg: {aggCount}
+          </div>
         </div>
       )}
     </motion.div>
   );
-}
+});
+
+export default GanttTimeline;
