@@ -5,15 +5,14 @@ import React, {
   useMemo,
   useCallback,
 } from "react";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Html, Line, Billboard, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { motion, AnimatePresence } from "framer-motion";
 import useFL from "@/hooks/useFL";
 import { useStore } from "@/lib/store";
-import { isProjectLead } from "@/lib/projectUtils";
-import { Badge } from "@/components/ui/badge";
 
+/* ─── Node config ──────────────────────────────────────────── */
 const NODE_CONFIG = {
   ACTIVE: {
     color: "#10b981",
@@ -62,20 +61,12 @@ const NODE_CONFIG = {
 const ORBIT_RADIUS = 4.5;
 const SERVER_SIZE = 0.55;
 const CLIENT_SIZE = 0.28;
-const LINE_OPACITY_ACTIVE = 0.6;
-const LINE_OPACITY_SLOW = 0.35;
-const LINE_OPACITY_BYZANTINE = 0.7;
-const LINE_OPACITY_BLOCKED = 0.1;
 
-const serverGeo = new THREE.SphereGeometry(SERVER_SIZE, 32, 32);
-const clientGeo = new THREE.SphereGeometry(CLIENT_SIZE, 24, 24);
-const glowGeo = new THREE.SphereGeometry(CLIENT_SIZE * 1.8, 12, 12);
-
+/* ─── Position calculator ──────────────────────────────────── */
 function computeNodePositions(nodes) {
   const phi = Math.PI * (3 - Math.sqrt(5));
   const positions = new Map();
   const n = nodes.length;
-
   nodes.forEach((node, i) => {
     const y = 1 - (i / (n - 1)) * 2 || 0;
     const radius = Math.sqrt(1 - y * y);
@@ -88,141 +79,125 @@ function computeNodePositions(nodes) {
   return positions;
 }
 
-function AnimatedEdge({
-  start,
-  end,
-  status,
-  active,
-  nodeId,
-  isNew,
-}) {
-  const edgeRef = useRef();
+/* ─── Animated Edge ────────────────────────────────────────── */
+function AnimatedEdge({ start, end, status, active, nodeId, isHovered }) {
   const packetRef = useRef(null);
-  const packetProgressRef = useRef(0);
-
-  const curve = useMemo(() => {
-    const hash = nodeId
-      .split("")
-      .reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    const randOffset = (hash % 10) / 10 - 0.5;
-    const midpoint = [
-      (start[0] + end[0]) / 2 + randOffset,
-      (start[1] + end[1]) / 2 + 0.5,
-      (start[2] + end[2]) / 2 + randOffset,
-    ];
-    return new THREE.CatmullRomCurve3([
-      new THREE.Vector3(...start),
-      new THREE.Vector3(...midpoint),
-      new THREE.Vector3(...end),
-    ]);
-  }, [start, end, nodeId]);
-
-  const points = useMemo(() => curve.getPoints(50), [curve]);
+  const progressRef = useRef(Math.random());
 
   const config = NODE_CONFIG[status] || NODE_CONFIG.ACTIVE;
   const isBlocked = status === "BLOCKED";
   const isByzantine = status === "BYZANTINE";
   const isSlow = status === "SLOW";
 
+  const curve = useMemo(() => {
+    const hash = nodeId
+      .split("")
+      .reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    const off = (hash % 10) / 10 - 0.5;
+    const mid = [
+      (start[0] + end[0]) / 2 + off,
+      (start[1] + end[1]) / 2 + 0.5,
+      (start[2] + end[2]) / 2 + off,
+    ];
+    return new THREE.CatmullRomCurve3([
+      new THREE.Vector3(...start),
+      new THREE.Vector3(...mid),
+      new THREE.Vector3(...end),
+    ]);
+  }, [start, end, nodeId]);
+
+  const points = useMemo(() => curve.getPoints(50), [curve]);
+
+  const lineOpacity =
+    isHovered ? 1.0
+    : isByzantine ? 0.7
+    : isSlow ? 0.35
+    : isBlocked ? 0.1
+    : 0.6;
+
   const lineWidth =
-    isByzantine ? 1.5
+    isHovered ? 2.5
+    : isByzantine ? 1.5
     : isSlow ? 0.8
     : isBlocked ? 0.5
     : 1;
-  const targetOpacity =
-    isByzantine ? LINE_OPACITY_BYZANTINE
-    : isSlow ? LINE_OPACITY_SLOW
-    : isBlocked ? LINE_OPACITY_BLOCKED
-    : LINE_OPACITY_ACTIVE;
 
   const packetSize = isByzantine ? 0.09 : 0.06;
-  const opacityRef = useRef(isNew ? 0 : targetOpacity);
 
   useFrame((state, delta) => {
-    // Fade in new edges
-    if (isNew && opacityRef.current < targetOpacity) {
-      opacityRef.current = Math.min(
-        targetOpacity,
-        opacityRef.current + delta * 2,
-      );
-      if (edgeRef.current?.material) {
-        edgeRef.current.material.opacity = opacityRef.current;
-      }
-    } else if (
-      edgeRef.current?.material &&
-      edgeRef.current.material.opacity !== targetOpacity
-    ) {
-      edgeRef.current.material.opacity = targetOpacity;
-      opacityRef.current = targetOpacity;
-    }
-
-    // Animate data packet along the edge using refs — no setState
     if (active && !isBlocked && packetRef.current) {
-      const speed =
-        isByzantine ? 0.55
-        : isSlow ? 0.15
-        : 0.4;
-      packetProgressRef.current = (packetProgressRef.current + delta * speed) % 1.0;
-      const pt = curve.getPoint(packetProgressRef.current);
+      const speed = isByzantine ? 0.55 : isSlow ? 0.15 : 0.4;
+      progressRef.current = (progressRef.current + delta * speed) % 1.0;
+      const pt = curve.getPoint(progressRef.current);
       packetRef.current.position.set(pt.x, pt.y, pt.z);
+      const s = packetSize * (1 + Math.sin(state.clock.elapsedTime * 10) * 0.2);
+      packetRef.current.scale.setScalar(s);
     }
   });
 
   return (
     <group>
       <Line
-        ref={edgeRef}
         points={points}
         color={config.glowColor}
         lineWidth={lineWidth}
         transparent
-        opacity={opacityRef.current}
+        opacity={lineOpacity}
+        depthWrite={false}
       />
       {active && !isBlocked && (
         <mesh ref={packetRef}>
-          <sphereGeometry args={[packetSize, 8, 8]} />
-          <meshBasicMaterial color={config.glowColor} />
+          <sphereGeometry args={[1, 8, 8]} />
+          <meshBasicMaterial
+            color={config.glowColor}
+            transparent
+            opacity={0.9}
+          />
         </mesh>
       )}
     </group>
   );
 }
 
+/* ─── Server Node ──────────────────────────────────────────── */
 function ServerNode({ position, onHover, onUnhover, hovered }) {
   const meshRef = useRef();
   const ringRef = useRef();
   const glowRef = useRef();
 
   useFrame((state, delta) => {
-    if (!meshRef.current || !ringRef.current || !glowRef.current) return;
-    meshRef.current.rotation.y += delta * 0.3;
-    meshRef.current.rotation.x += delta * 0.1;
-
-    ringRef.current.rotation.z += delta * 0.5;
+    if (!meshRef.current || !ringRef.current) return;
+    meshRef.current.rotation.y += delta * 0.4;
+    meshRef.current.rotation.x += delta * 0.15;
+    ringRef.current.rotation.z += delta * 0.6;
     ringRef.current.rotation.x = Math.PI / 2.5;
-
-    const breath = 1 + Math.sin(state.clock.elapsedTime * 0.8) * 0.03;
+    const breath = 1 + Math.sin(state.clock.elapsedTime * 1.2) * 0.04;
     meshRef.current.scale.setScalar(breath);
-
-    const glow = 0.3 + Math.sin(state.clock.elapsedTime * 1.5) * 0.15;
-    glowRef.current.material.opacity = glow;
+    if (glowRef.current?.material) {
+      glowRef.current.material.opacity =
+        0.25 + Math.sin(state.clock.elapsedTime * 2) * 0.15;
+    }
   });
 
   return (
     <group position={position}>
-      <mesh ref={meshRef} onPointerEnter={onHover} onPointerLeave={onUnhover}>
-        <primitive object={serverGeo} attach="geometry" />
+      <mesh
+        ref={meshRef}
+        onPointerEnter={onHover}
+        onPointerLeave={onUnhover}
+      >
+        <sphereGeometry args={[SERVER_SIZE, 32, 32]} />
         <meshStandardMaterial
           color={NODE_CONFIG.SERVER.color}
           emissive={NODE_CONFIG.SERVER.emissive}
-          emissiveIntensity={hovered ? 0.8 : 0.4}
-          metalness={0.7}
-          roughness={0.2}
+          emissiveIntensity={hovered ? 2.5 : 1.2}
+          metalness={0.9}
+          roughness={0.1}
         />
       </mesh>
 
       <mesh ref={glowRef}>
-        <sphereGeometry args={[SERVER_SIZE * 1.6, 16, 16]} />
+        <sphereGeometry args={[SERVER_SIZE * 1.6, 24, 24]} />
         <meshBasicMaterial
           color={NODE_CONFIG.SERVER.glowColor}
           transparent
@@ -249,14 +224,13 @@ function ServerNode({ position, onHover, onUnhover, hovered }) {
         />
       </mesh>
 
-      <Billboard follow={true} lockX={false} lockY={false} lockZ={false}>
+      <Billboard follow lockX={false} lockY={false} lockZ={false}>
         <Text
           position={[0, SERVER_SIZE + 0.4, 0]}
           fontSize={0.18}
           color={NODE_CONFIG.SERVER.glowColor}
           anchorX="center"
           anchorY="middle"
-          font="https://fonts.gstatic.com/s/jetbrainsmono/v13/tDbY2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yK1jOdnk.woff2"
         >
           SERVER
         </Text>
@@ -274,57 +248,24 @@ function ServerNode({ position, onHover, onUnhover, hovered }) {
   );
 }
 
-function ClientNode({ node, position, onHover, onUnhover, hovered, isNew }) {
+/* ─── Client Node ──────────────────────────────────────────── */
+function ClientNode({ node, position, onHover, onUnhover, hovered }) {
   const meshRef = useRef();
   const glowRef = useRef();
-  const groupRef = useRef();
-  const scaleRef = useRef(isNew ? 0 : 1);
-  const [hasAppeared, setHasAppeared] = useState(!isNew);
-
   const config = NODE_CONFIG[node.status] || NODE_CONFIG.ACTIVE;
 
-  useEffect(() => {
-    if (isNew) {
-      const timer = setTimeout(() => {
-        setHasAppeared(true);
-      }, 600);
-      return () => clearTimeout(timer);
+  useFrame((state) => {
+    if (!meshRef.current) return;
+    if (config.pulseSpeed > 0) {
+      const pulse =
+        1 + Math.sin(state.clock.elapsedTime * config.pulseSpeed) * 0.08;
+      meshRef.current.scale.setScalar(pulse);
     }
-  }, [isNew]);
-
-  useFrame((state, delta) => {
-    if (!meshRef.current || !glowRef.current || !groupRef.current) return;
-
-    if (isNew && !hasAppeared) {
-      const elapsed = state.clock.elapsedTime;
-      if (scaleRef.current < 1) {
-        scaleRef.current = Math.min(1.2, scaleRef.current + delta * 3);
-      } else if (scaleRef.current > 1 && scaleRef.current !== 1.2) {
-        scaleRef.current = Math.max(1, scaleRef.current - delta * 2);
-      }
-      groupRef.current.scale.setScalar(scaleRef.current);
-
-      const targetPos = new THREE.Vector3(...position);
-      const startPos = targetPos.clone().multiplyScalar(2.5);
-      groupRef.current.position.lerpVectors(
-        startPos,
-        targetPos,
-        scaleRef.current / 1.2,
-      );
-    } else {
-      groupRef.current.position.set(...position);
-      groupRef.current.scale.setScalar(1);
-      if (config.pulseSpeed > 0) {
-        const pulse =
-          1 + Math.sin(state.clock.elapsedTime * config.pulseSpeed) * 0.08;
-        meshRef.current.scale.setScalar(pulse);
-      }
+    if (glowRef.current?.material) {
+      glowRef.current.material.opacity =
+        0.15 +
+        Math.sin(state.clock.elapsedTime * config.pulseSpeed * 0.7) * 0.1;
     }
-
-    const glow =
-      0.15 + Math.sin(state.clock.elapsedTime * config.pulseSpeed * 0.7) * 0.1;
-    glowRef.current.material.opacity = glow;
-
     if (node.status === "BYZANTINE") {
       meshRef.current.position.x =
         Math.sin(state.clock.elapsedTime * 3.7) * 0.04;
@@ -333,27 +274,23 @@ function ClientNode({ node, position, onHover, onUnhover, hovered, isNew }) {
     } else if (node.status === "SLOW") {
       meshRef.current.position.y =
         Math.sin(state.clock.elapsedTime * 0.5) * 0.06;
-    } else {
-      meshRef.current.position.set(0, 0, 0);
     }
   });
 
   return (
-    <group ref={groupRef} position={position}>
+    <group position={position}>
       <mesh
         ref={meshRef}
         onPointerEnter={onHover}
         onPointerLeave={onUnhover}
-        castShadow
       >
-        <primitive object={clientGeo} attach="geometry" />
+        <sphereGeometry args={[CLIENT_SIZE, 24, 24]} />
         <meshStandardMaterial
           color={config.color}
           emissive={config.emissive}
           emissiveIntensity={
             hovered ? 1.0
-            : node.status === "BYZANTINE" ?
-              0.6
+            : node.status === "BYZANTINE" ? 0.6
             : 0.3
           }
           metalness={node.status === "BLOCKED" ? 0.1 : 0.5}
@@ -364,7 +301,7 @@ function ClientNode({ node, position, onHover, onUnhover, hovered, isNew }) {
       </mesh>
 
       <mesh ref={glowRef}>
-        <primitive object={glowGeo} attach="geometry" />
+        <sphereGeometry args={[CLIENT_SIZE * 1.8, 16, 16]} />
         <meshBasicMaterial
           color={config.glowColor}
           transparent
@@ -375,7 +312,11 @@ function ClientNode({ node, position, onHover, onUnhover, hovered, isNew }) {
 
       <mesh>
         <sphereGeometry args={[CLIENT_SIZE * 0.45, 12, 12]} />
-        <meshBasicMaterial color={config.glowColor} transparent opacity={0.6} />
+        <meshBasicMaterial
+          color={config.glowColor}
+          transparent
+          opacity={0.6}
+        />
       </mesh>
 
       {node.status === "BYZANTINE" && (
@@ -409,6 +350,7 @@ function ClientNode({ node, position, onHover, onUnhover, hovered, isNew }) {
   );
 }
 
+/* ─── Tooltips ─────────────────────────────────────────────── */
 function ServerTooltipContent({ fl }) {
   const method =
     fl.project?.config?.aggregationMethod?.replace(/_/g, " ") ||
@@ -426,8 +368,6 @@ function ServerTooltipContent({ fl }) {
         <span className="text-slate-200">Global Model Host</span>
         <span className="text-slate-400">Status:</span>
         <span className="text-emerald-400">● Online</span>
-        <span className="text-slate-400">Function:</span>
-        <span className="text-slate-200">Aggregation Engine</span>
         <span className="text-slate-400">Aggregator:</span>
         <span className="text-cyan-200 capitalize">{method}</span>
         <span className="text-slate-400">Round:</span>
@@ -447,11 +387,6 @@ function NodeTooltipContent({
   setHoveredNodeId,
 }) {
   const config = NODE_CONFIG[node.status] || NODE_CONFIG.ACTIVE;
-  const typeLabel =
-    node.status === "BYZANTINE" ? "Byzantine"
-    : node.status === "SLOW" ? "Honest Slow"
-    : node.status === "BLOCKED" ? "Blocked"
-    : "Honest Fast";
 
   return (
     <div className="flex flex-col gap-2" style={{ pointerEvents: "auto" }}>
@@ -503,8 +438,6 @@ function NodeTooltipContent({
         <span className="text-slate-200">{node.staleness || 0}r</span>
         <span className="text-slate-400">Rounds Done:</span>
         <span className="text-slate-200">{node.roundsContributed || 0}</span>
-        <span className="text-slate-400">Type:</span>
-        <span className="text-slate-200">{typeLabel}</span>
       </div>
 
       {node.status === "BYZANTINE" && (
@@ -517,15 +450,10 @@ function NodeTooltipContent({
           🚫 BLOCKED — Manually excluded by admin
         </div>
       )}
-      {node.status === "SLOW" && (
-        <div className="mt-1 p-2 bg-amber-950 border border-amber-900 rounded text-xs text-amber-300">
-          ⏱ ASYNC — Update delayed by {node.staleness || 0} rounds
-        </div>
-      )}
 
       {isAdmin && (
         <div className="mt-2 pt-2 border-t border-slate-700 flex justify-end">
-          {node.status === "BLOCKED" ?
+          {node.status === "BLOCKED" ? (
             <button
               className="px-3 py-1 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border border-emerald-600/50 rounded-full text-xs transition-colors cursor-pointer"
               onClick={(e) => {
@@ -537,7 +465,8 @@ function NodeTooltipContent({
             >
               Unblock Node
             </button>
-          : <button
+          ) : (
+            <button
               className="px-3 py-1 bg-rose-600/20 hover:bg-rose-600/40 text-rose-400 border border-rose-600/50 rounded-full text-xs transition-colors cursor-pointer"
               onClick={(e) => {
                 e.preventDefault();
@@ -548,7 +477,7 @@ function NodeTooltipContent({
             >
               Block Node
             </button>
-          }
+          )}
         </div>
       )}
     </div>
@@ -593,16 +522,17 @@ function NodeTooltip({
               pointerEvents: isAdmin && !isServer ? "auto" : "none",
             }}
           >
-            {isServer ?
+            {isServer ? (
               <ServerTooltipContent fl={fl} />
-            : <NodeTooltipContent
+            ) : (
+              <NodeTooltipContent
                 node={node}
                 isAdmin={isAdmin}
                 onBlock={onBlock}
                 onUnblock={onUnblock}
                 setHoveredNodeId={setHoveredNodeId}
               />
-            }
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -610,6 +540,7 @@ function NodeTooltip({
   );
 }
 
+/* ─── HUD overlays ─────────────────────────────────────────── */
 function LiveLog({ events }) {
   return (
     <div className="absolute top-4 right-4 w-72 max-h-72 overflow-hidden bg-[#050810]/85 border border-white/10 rounded-lg backdrop-blur-md p-3 z-10 pointer-events-none flex flex-col">
@@ -677,6 +608,7 @@ function NetworkLegend() {
   );
 }
 
+/* ─── The 3D Scene (lives INSIDE Canvas) ───────────────────── */
 function NetworkScene({
   fl,
   isRunning,
@@ -687,17 +619,17 @@ function NetworkScene({
 }) {
   const [hoveredNodeId, setHoveredNodeId] = useState(null);
   const [hoveredServer, setHoveredServer] = useState(false);
-
   const nodes = fl.nodes;
 
   const nodePositions = useMemo(() => computeNodePositions(nodes), [nodes]);
 
+  const starsRef = useRef();
   const starPositions = useMemo(() => {
-    const pos = new Float32Array(300 * 3);
-    for (let i = 0; i < 300; i++) {
+    const pos = new Float32Array(400 * 3);
+    for (let i = 0; i < 400; i++) {
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
-      const r = 20 + Math.random() * 10;
+      const r = 25 + Math.random() * 15;
       pos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
       pos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
       pos[i * 3 + 2] = r * Math.cos(phi);
@@ -705,35 +637,54 @@ function NetworkScene({
     return pos;
   }, []);
 
+  useFrame((state) => {
+    if (starsRef.current) {
+      starsRef.current.rotation.y = state.clock.elapsedTime * 0.02;
+      starsRef.current.rotation.x = state.clock.elapsedTime * 0.01;
+    }
+  });
+
   return (
     <>
-      <ambientLight intensity={0.3} />
-      <pointLight
-        position={[0, 0, 0]}
-        intensity={2}
-        color="#06b6d4"
-        distance={12}
-        decay={2}
-      />
-      <pointLight position={[8, 8, 8]} intensity={0.4} color="#ffffff" />
-      <pointLight position={[-8, -4, -8]} intensity={0.2} color="#818cf8" />
+      {/* Lighting */}
+      <ambientLight intensity={0.6} />
+      <pointLight position={[0, 0, 0]} intensity={2} color="#06b6d4" distance={15} decay={2} />
+      <directionalLight position={[10, 10, 5]} intensity={1.2} />
+      <directionalLight position={[-8, -4, -8]} intensity={0.4} color="#818cf8" />
 
+      {/* Background */}
       <color attach="background" args={["#050810"]} />
 
-      <points>
+      {/* Stars */}
+      <points ref={starsRef}>
         <bufferGeometry>
           <bufferAttribute
             attach="attributes-position"
             args={[starPositions, 3]}
           />
         </bufferGeometry>
-        <pointsMaterial size={0.04} color="#475569" transparent opacity={0.6} />
+        <pointsMaterial
+          size={0.06}
+          color="#94a3b8"
+          transparent
+          opacity={0.4}
+          sizeAttenuation
+        />
       </points>
 
-      <gridHelper args={[24, 24, "#0f1a2e", "#0a1220"]} position={[0, -4, 0]} />
+      {/* Grid floor */}
+      <gridHelper
+        args={[24, 24, "#0f1a2e", "#0a1220"]}
+        position={[0, -4, 0]}
+      />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -3.9, 0]}>
+        <ringGeometry args={[4.4, 4.6, 64]} />
+        <meshBasicMaterial color="#06b6d4" transparent opacity={0.08} />
+      </mesh>
 
+      {/* Controls */}
       <OrbitControls
-        enableDamping={true}
+        enableDamping
         dampingFactor={0.05}
         minDistance={4}
         maxDistance={14}
@@ -741,85 +692,89 @@ function NetworkScene({
         autoRotateSpeed={0.4}
       />
 
-      <group>
-        {nodes.map((node) => {
-          const posData = nodePositions.get(node.nodeId);
-          if (!posData) return null;
-
-          return (
-            <AnimatedEdge
-              key={`edge-${node.nodeId}`}
-              nodeId={node.nodeId}
-              start={[0, 0, 0]}
-              end={posData.position}
-              status={node.status}
-              active={isRunning}
-              isNew={!node.roundsContributed}
-            />
-          );
-        })}
-
-        <ServerNode
-          position={[0, 0, 0]}
-          onHover={() => setHoveredServer(true)}
-          onUnhover={() => setHoveredServer(false)}
-          hovered={hoveredServer}
-        />
-
-        {hoveredServer && (
-          <NodeTooltip
-            position={[0, SERVER_SIZE + 0.5, 0]}
-            visible={true}
-            isServer={true}
-            fl={fl}
+      {/* Edges */}
+      {nodes.map((node) => {
+        const posData = nodePositions.get(node.nodeId);
+        if (!posData) return null;
+        return (
+          <AnimatedEdge
+            key={`edge-${node.nodeId}`}
+            nodeId={node.nodeId}
+            start={[0, 0, 0]}
+            end={posData.position}
+            status={node.status}
+            active={isRunning}
+            isHovered={hoveredNodeId === node.nodeId}
           />
-        )}
+        );
+      })}
 
-        {nodes.map((node) => {
-          const posData = nodePositions.get(node.nodeId);
-          if (!posData) return null;
-          const isHovered = hoveredNodeId === node.nodeId;
+      {/* Server */}
+      <ServerNode
+        position={[0, 0, 0]}
+        onHover={() => setHoveredServer(true)}
+        onUnhover={() => setHoveredServer(false)}
+        hovered={hoveredServer}
+      />
+      {hoveredServer && (
+        <NodeTooltip
+          position={[0, SERVER_SIZE + 0.5, 0]}
+          visible
+          isServer
+          fl={fl}
+        />
+      )}
 
-          return (
-            <React.Fragment key={`node-${node.nodeId}`}>
-              <ClientNode
+      {/* Client nodes */}
+      {nodes.map((node) => {
+        const posData = nodePositions.get(node.nodeId);
+        if (!posData) return null;
+        const isHovered = hoveredNodeId === node.nodeId;
+        return (
+          <React.Fragment key={`node-${node.nodeId}`}>
+            <ClientNode
+              node={node}
+              position={posData.position}
+              onHover={() => setHoveredNodeId(node.nodeId)}
+              onUnhover={() => setHoveredNodeId(null)}
+              hovered={isHovered}
+            />
+            {isHovered && (
+              <NodeTooltip
                 node={node}
                 position={posData.position}
-                onHover={() => setHoveredNodeId(node.nodeId)}
-                onUnhover={() => setHoveredNodeId(null)}
-                hovered={isHovered}
-                isNew={!node.roundsContributed}
+                visible
+                isServer={false}
+                isAdmin={isAdmin}
+                onBlock={onBlockNode}
+                onUnblock={onUnblockNode}
+                setHoveredNodeId={setHoveredNodeId}
               />
-              {isHovered && (
-                <NodeTooltip
-                  node={node}
-                  position={posData.position}
-                  visible={true}
-                  isServer={false}
-                  isAdmin={isAdmin}
-                  onBlock={onBlockNode}
-                  onUnblock={onUnblockNode}
-                  setHoveredNodeId={setHoveredNodeId}
-                />
-              )}
-            </React.Fragment>
-          );
-        })}
-      </group>
+            )}
+          </React.Fragment>
+        );
+      })}
     </>
   );
 }
 
+/* ─── Main Component ───────────────────────────────────────── */
 function NetworkTopology({ projectId }) {
   const fl = useFL(projectId);
-  const store = useStore();
-  const currentUser = store.user;
-  const isAdmin = isProjectLead(currentUser?.id, projectId, store);
+  const currentUser = useStore((s) => s.user);
+  const projectRoles = useStore((s) => s.projectRoles);
+
+  const isAdmin = useMemo(() => {
+    const role = projectRoles?.[projectId]?.[currentUser?.id];
+    if (role) return role === "lead";
+    const proj = fl.project;
+    const member = proj?.members?.find((m) => m.userId === currentUser?.id);
+    return member?.role === "lead";
+  }, [projectRoles, projectId, currentUser?.id, fl.project]);
 
   const [logEvents, setLogEvents] = useState([]);
-  const prevNodesRef = useRef([]);
+  const lastLoggedNodesRef = useRef(0);
   const prevRoundRef = useRef(fl.currentRound);
-
   const [autoRotate, setAutoRotate] = useState(true);
 
   const pushLog = useCallback((message, type) => {
@@ -839,34 +794,14 @@ function NetworkTopology({ projectId }) {
 
   useEffect(() => {
     if (!fl.nodes || fl.nodes.length === 0) return;
-
-    if (prevNodesRef.current.length > 0) {
-      fl.nodes.forEach((node) => {
-        const prev = prevNodesRef.current.find((n) => n.nodeId === node.nodeId);
-        if (!prev) {
-          pushLog(
-            `NODE_${node.displayId || node.nodeId.substring(0, 4)} joined the network`,
-            "join",
-          );
-        } else if (prev.status !== node.status) {
-          if (node.status === "BYZANTINE")
-            pushLog(`${node.displayId} flagged as malicious`, "byzantine");
-          else if (node.status === "BLOCKED")
-            pushLog(`${node.displayId} blocked by admin`, "blocked");
-          else if (node.status === "ACTIVE" && prev.status === "BYZANTINE")
-            pushLog(`${node.displayId} cleared`, "join");
-          else if (node.status === "SLOW")
-            pushLog(`${node.displayId} experiencing latency`, "default");
-        }
-      });
-    } else {
+    if (lastLoggedNodesRef.current === 0) {
       pushLog(
         "Network initialized with " + fl.nodes.length + " clients",
         "default",
       );
+      lastLoggedNodesRef.current = fl.nodes.length;
     }
-    prevNodesRef.current = fl.nodes;
-  }, [fl.nodes, pushLog]);
+  }, [fl.nodes?.length, pushLog]);
 
   useEffect(() => {
     if (fl.currentRound !== prevRoundRef.current && fl.latestRound) {
@@ -884,6 +819,7 @@ function NetworkTopology({ projectId }) {
     }
   }, [fl.currentRound, fl.latestRound, pushLog]);
 
+  /* ── Loading state ── */
   if (!fl.nodes || fl.nodes.length === 0) {
     return (
       <div className="h-[320px] md:h-[520px] w-full flex items-center justify-center bg-[#050810] rounded-xl border border-border">
@@ -897,6 +833,7 @@ function NetworkTopology({ projectId }) {
 
   return (
     <div className="relative w-full h-[320px] md:h-[520px] flex flex-col bg-[#050810] rounded-xl border border-border overflow-hidden">
+      {/* Status bar */}
       <div className="flex-none flex items-center justify-between px-4 py-2 bg-slate-900/80 backdrop-blur z-10 border-b border-white/5">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5 metric-label">
@@ -935,7 +872,6 @@ function NetworkTopology({ projectId }) {
             </span>
           </div>
         </div>
-
         <div className="flex items-center gap-2">
           {isAdmin && (
             <div className="text-[10px] text-slate-400 font-mono hidden sm:block mr-2 px-2 py-1 bg-white/5 rounded">
@@ -951,16 +887,12 @@ function NetworkTopology({ projectId }) {
         </div>
       </div>
 
+      {/* 3D Canvas */}
       <div className="flex-1 relative">
         <Canvas
-          camera={{ position: [0, 3, 10], fov: 55 }}
-          shadows
-          gl={{
-            antialias: true,
-            alpha: false,
-            powerPreference: "high-performance",
-          }}
-          frameloop={fl.isRunning ? "always" : "demand"}
+          camera={{ position: [0, 5, 12], fov: 50 }}
+          frameloop="always"
+          gl={{ antialias: true }}
         >
           <NetworkScene
             fl={fl}
@@ -979,4 +911,4 @@ function NetworkTopology({ projectId }) {
   );
 }
 
-export default React.memo(NetworkTopology);
+export default NetworkTopology;
