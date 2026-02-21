@@ -1,6 +1,6 @@
 # server/__init__.py
 from server.fl_server import (
-    load_users,
+    init_jwt,
     verify_token,
     register_client,
     deregister_client,
@@ -10,3 +10,4 @@ from server.fl_server import (
     handle_websocket,
 )
 from server.model_history import ModelHistory
+

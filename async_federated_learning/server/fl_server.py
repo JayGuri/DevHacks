@@ -1,20 +1,25 @@
 # server/fl_server.py — Connection manager, task-aware async buffer, WebSocket router
 import asyncio
 import json
+import os
+import sys
 import time
 import logging
 from datetime import datetime, timezone
 
-import jwt
 import numpy as np
 from fastapi import HTTPException
 
+# Ensure repo root is on sys.path for core.jwt_auth
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+
+from core.jwt_auth import decode_token as _core_decode_token  # noqa: E402
 from detection.anomaly import check_l2_norm
 
 logger = logging.getLogger("fedbuff.server")
 
-# Module-level auth state
-_jwt_secret: str = None
 connected_clients: dict = {}
 # {client_id: {"websocket": ws, "role": str, "display_name": str,
 #              "participant": str, "task": str, "connected_at": float,
@@ -22,34 +27,22 @@ connected_clients: dict = {}
 
 
 def init_jwt(secret: str) -> None:
-    """Initialize the JWT secret used for token verification."""
-    global _jwt_secret
-    _jwt_secret = secret
-    logger.info("JWT secret initialized.")
-
-
-# Kept for backwards compatibility — calls init_jwt if the file has a jwt_secret field.
-def load_users(filepath: str) -> None:
-    """Legacy: reads users.json and extracts jwt_secret. Use init_jwt() instead."""
-    global _jwt_secret
-    with open(filepath, "r") as f:
-        data = json.load(f)
-    _jwt_secret = data["jwt_secret"]
-    logger.info("Loaded JWT secret from %s (legacy load_users)", filepath)
+    """Deprecated no-op — JWT secret is now read from JWT_SECRET env var via core.jwt_auth."""
+    logger.info("init_jwt() called (no-op — JWT_SECRET sourced from environment).")
 
 
 def verify_token(token: str) -> dict:
     """Decodes and validates JWT. Raises HTTPException(403) on failure. Returns full payload."""
-    global _jwt_secret
-    if not _jwt_secret:
-        raise HTTPException(status_code=500, detail="JWT secret not configured")
+    import jwt as _pyjwt
     try:
-        payload = jwt.decode(token, _jwt_secret, algorithms=["HS256"])
-        return payload
-    except jwt.ExpiredSignatureError:
+        return _core_decode_token(token)
+    except _pyjwt.ExpiredSignatureError:
         raise HTTPException(status_code=403, detail="Token expired")
-    except jwt.InvalidTokenError as e:
+    except _pyjwt.InvalidTokenError as e:
         raise HTTPException(status_code=403, detail=f"Invalid token: {e}")
+    except RuntimeError as e:
+        # JWT_SECRET not set
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def register_client(client_id: str, websocket, role: str, display_name: str,
@@ -428,8 +421,16 @@ async def handle_websocket(
         )
 
         # Message dispatch loop
+        # Security: reject messages exceeding 50 MB to prevent OOM DoS
+        MAX_MESSAGE_SIZE = 50 * 1024 * 1024  # 50 MB
         async for message in websocket.iter_text():
             try:
+                if len(message) > MAX_MESSAGE_SIZE:
+                    logger.warning(
+                        "Message too large from %s: %d bytes (max=%d). Dropping.",
+                        client_id, len(message), MAX_MESSAGE_SIZE,
+                    )
+                    continue
                 data = json.loads(message)
                 msg_type = data.get("type", "")
 

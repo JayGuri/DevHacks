@@ -1,12 +1,19 @@
 # server/node_registry.py — Dynamic node registry for federated learning
 import json
 import logging
+import os
 import secrets
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import jwt
+# Ensure repo root is on sys.path for core.jwt_auth
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+
+from core.jwt_auth import create_token as _core_create_token  # noqa: E402
 
 logger = logging.getLogger("fedbuff.node_registry")
 
@@ -20,8 +27,9 @@ class NodeRegistry:
     ordering provides natural non-IID distribution.
     """
 
-    def __init__(self, registry_file: str, jwt_secret: str, max_nodes_per_task: int = 10):
+    def __init__(self, registry_file: str, jwt_secret: str = "", max_nodes_per_task: int = 10):
         self.registry_file = registry_file
+        # jwt_secret param kept for backward compat; ignored — core.jwt_auth reads env
         self.jwt_secret = jwt_secret
         self.max_nodes_per_task = max_nodes_per_task
         # {node_id: {task, role, display_name, node_index, created_at, attack_type, attack_scale}}
@@ -60,19 +68,19 @@ class NodeRegistry:
         node_index = current_count
         node_id = f"node-{task[:3]}-{node_index:03d}-{uuid.uuid4().hex[:6]}"
 
-        # Mint JWT
-        now = datetime.now(timezone.utc)
-        payload = {
-            "sub": node_id,
+        # Mint JWT via shared core auth
+        extra_claims = {
             "display_name": display_name,
-            "role": role,
             "task": task,
             "node_index": node_index,
             "total_nodes": self.max_nodes_per_task,
-            "iat": now,
-            "exp": now + timedelta(days=30),
         }
-        token = jwt.encode(payload, self.jwt_secret, algorithm="HS256")
+        token = _core_create_token(
+            sub=node_id,
+            role=role,
+            extra_claims=extra_claims,
+            expiry_hours=30 * 24,  # 30 days
+        )
 
         # Store node info
         node_info = {

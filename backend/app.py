@@ -15,6 +15,12 @@ Or:
 import os
 import sys
 import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+ROOT_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+load_dotenv(ROOT_ENV_PATH, override=False)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,7 +60,9 @@ app = FastAPI(
 # CORS — allow all origins for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv(
+        "ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173"
+    ).split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

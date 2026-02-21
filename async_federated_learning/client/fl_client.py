@@ -8,6 +8,7 @@ import argparse
 import random
 import time
 import base64
+from pathlib import Path
 import logging
 from datetime import datetime, timezone
 
@@ -536,7 +537,7 @@ async def main():
     """Main FL client loop."""
     # Parse arguments
     parser = argparse.ArgumentParser(description="FedBuff FL Client")
-    parser.add_argument("--env", type=str, required=True, help="Path to .env file")
+    parser.add_argument("--env", type=str, default=None, help="Path to .env file")
     parser.add_argument(
         "--demo-speed", action="store_true",
         help="Demo mode: LOCAL_EPOCHS=1, heartbeat delay=0.0",
@@ -544,7 +545,8 @@ async def main():
     args = parser.parse_args()
 
     # Load environment variables
-    load_dotenv(args.env, override=True)
+    root_env_path = Path(__file__).resolve().parents[2] / ".env"
+    load_dotenv(args.env or str(root_env_path), override=True)
 
     # Read configuration from environment
     client_id = os.environ.get("CLIENT_ID", "unknown-client")
