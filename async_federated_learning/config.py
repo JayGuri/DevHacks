@@ -93,39 +93,93 @@ class Settings(BaseSettings):
     ANOMALY_THRESHOLD: float = 2.5
 
     # ------------------------------------------------------------------
-    # Defense — Gatekeeper (legacy static threshold as fallback)
+    # Gatekeeper (L2 Norm Filter Funnel)
     # ------------------------------------------------------------------
-    L2_NORM_THRESHOLD: float = 500.0
+    use_gatekeeper: bool = True
+    gatekeeper_l2_factor: float = 3.0  # Std deviation multiplier
+    gatekeeper_min_threshold: float = 0.01
+    gatekeeper_max_threshold: float = 1000.0
 
     # ------------------------------------------------------------------
-    # Differential Privacy (merged)
+    # Privacy Mechanisms (mutually exclusive or combined)
     # ------------------------------------------------------------------
-    USE_DP: bool = True
-    DP_MAX_GRAD_NORM: float = 1.0
-    DP_NOISE_MULTIPLIER: float = 1.1
-    DP_CLIP_NORM: float = 1.0
+    # Differential Privacy: adds noise, some accuracy loss
+    use_dp: bool = False
+    dp_noise_multiplier: float = 0.1
+    dp_clip_norm: float = 1.0
+    
+    # Secure Aggregation: cryptographic masking, ZERO accuracy loss
+    use_secure_aggregation: bool = True
+    secure_agg_seed: int = 42  # For reproducibility (testing only)
 
     # ------------------------------------------------------------------
-    # WandB (ayush scientific core)
+    # WandB
     # ------------------------------------------------------------------
-    USE_WANDB: bool = False
-    WANDB_PROJECT: str = "arfl-devhacks2026"
+    use_wandb: bool = False
+    wandb_project: str = "arfl-devhacks2026"
 
     # ------------------------------------------------------------------
-    # Evaluation & Storage (merged)
+    # Evaluation
     # ------------------------------------------------------------------
-    EVAL_EVERY_N_ROUNDS: int = 5
-    MODEL_CHECKPOINT_DIR: str = "./results/checkpoints"
-    RESULTS_DIR: str = "./results"
-
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-        "extra": "ignore",
-    }
+    eval_every_n_rounds: int = 5
+    output_dir: str = "./results"
 
     # ------------------------------------------------------------------
-    # Derived properties
+    # Derived fields — computed in __post_init__, not set by the caller
+    # ------------------------------------------------------------------
+    num_byzantine_clients: int = field(default=0, init=False, repr=False)
+    num_honest_clients: int = field(default=0, init=False, repr=False)
+
+    # ------------------------------------------------------------------
+
+    def __post_init__(self) -> None:
+        """
+        Validate configuration and compute derived fields.
+
+        Checks:
+          1. byzantine_fraction must be < 0.5 (majority-honest assumption).
+          2. CIFAR-10 requires in_channels == 3.
+
+        Derived:
+          - num_byzantine_clients = int(num_clients * byzantine_fraction)
+          - num_honest_clients    = num_clients - num_byzantine_clients
+          - output_dir is created if it does not already exist.
+        """
+        # 1. Majority-honest sanity check
+        if self.byzantine_fraction >= 0.5:
+            raise ValueError(
+                f"byzantine_fraction must be < 0.5 for majority-honest "
+                f"assumption; got {self.byzantine_fraction}."
+            )
+
+        # 2. Derived client counts
+        # num_byzantine_clients = ⌊N · f⌋  where f = byzantine_fraction
+        self.num_byzantine_clients = int(self.num_clients * self.byzantine_fraction)
+        self.num_honest_clients = self.num_clients - self.num_byzantine_clients
+
+        # 3. Create output directory
+        output_path = Path(self.output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        logger.debug("Output directory ensured: %s", output_path.resolve())
+
+        # 4. Channel / dataset consistency check
+        if self.in_channels == 1 and self.dataset_name == "CIFAR10":
+            raise ValueError(
+                "CIFAR10 is an RGB dataset and requires in_channels=3, "
+                f"but in_channels={self.in_channels} was provided."
+            )
+
+        logger.info(
+            "Config validated — clients: %d (%d Byzantine, %d honest), "
+            "attack: %s, aggregation: %s, DP: %s",
+            self.num_clients,
+            self.num_byzantine_clients,
+            self.num_honest_clients,
+            self.attack_type,
+            self.aggregation_method,
+            self.use_dp,
+        )
+
     # ------------------------------------------------------------------
 
     @property

@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+ARFL_Final_Blueprint.docx
 
 # Virtual environments
 venv/
