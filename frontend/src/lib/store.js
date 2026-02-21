@@ -116,4 +116,91 @@ export const useStore = create((set) => ({
         },
       };
     }),
+
+  // ── Join request management ───────────────────────────
+  joinRequests: [],
+  submitJoinRequest: (request) =>
+    set((s) => ({
+      joinRequests: [
+        ...s.joinRequests,
+        {
+          ...request,
+          id: `req-${Date.now()}`,
+          status: "pending",
+          requestedAt: new Date().toISOString(),
+          resolvedAt: null,
+          resolvedBy: null,
+        },
+      ],
+    })),
+  approveRequest: (requestId, leadId) =>
+    set((s) => {
+      const req = s.joinRequests.find((r) => r.id === requestId);
+      if (!req) return s;
+      const currentProjects = s.userProjects[req.userId] || [];
+      return {
+        joinRequests: s.joinRequests.map((r) =>
+          r.id === requestId
+            ? { ...r, status: "approved", resolvedAt: new Date().toISOString(), resolvedBy: leadId }
+            : r
+        ),
+        userProjects: {
+          ...s.userProjects,
+          [req.userId]: [...currentProjects, req.projectId],
+        },
+      };
+    }),
+  rejectRequest: (requestId, leadId) =>
+    set((s) => ({
+      joinRequests: s.joinRequests.map((r) =>
+        r.id === requestId
+          ? { ...r, status: "rejected", resolvedAt: new Date().toISOString(), resolvedBy: leadId }
+          : r
+      ),
+    })),
+
+  // ── Per-project role overrides ────────────────────────
+  projectRoles: {
+    p1: { u1: "lead", u2: "contributor", u3: "contributor" },
+    p2: { u1: "lead", u4: "contributor" },
+    p3: { u1: "lead", u2: "contributor", u5: "contributor" },
+  },
+  setProjectRole: (projectId, userId, role) =>
+    set((s) => ({
+      projectRoles: {
+        ...s.projectRoles,
+        [projectId]: { ...(s.projectRoles[projectId] || {}), [userId]: role },
+      },
+    })),
+
+  // ── Notifications ─────────────────────────────────────
+  notifications: [],
+  pushNotification: (notif) =>
+    set((s) => ({
+      notifications: [
+        { ...notif, id: `notif-${Date.now()}`, read: false, createdAt: new Date().toISOString() },
+        ...s.notifications,
+      ].slice(0, 50),
+    })),
+  markNotificationRead: (id) =>
+    set((s) => ({
+      notifications: s.notifications.map((n) =>
+        n.id === id ? { ...n, read: true } : n
+      ),
+    })),
+  markAllRead: () =>
+    set((s) => ({
+      notifications: s.notifications.map((n) => ({ ...n, read: true })),
+    })),
+
+  // ── Extra projects (created via admin dialog) ─────────
+  extraProjects: [],
+  addProject: (project) =>
+    set((s) => ({ extraProjects: [...s.extraProjects, project] })),
+  archiveProject: (id) =>
+    set((s) => ({
+      extraProjects: s.extraProjects.map((p) =>
+        p.id === id ? { ...p, isActive: false } : p
+      ),
+    })),
 }));

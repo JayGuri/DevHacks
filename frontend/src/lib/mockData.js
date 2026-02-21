@@ -19,6 +19,10 @@ export const MOCK_PROJECTS = [
     createdBy: "u1",
     createdAt: "2025-02-15",
     isActive: true,
+    visibility: "public",
+    inviteCode: null,
+    joinRequests: [],
+    maxMembers: 10,
     config: {
       numClients: 10,
       byzantineFraction: 0.2,
@@ -45,6 +49,10 @@ export const MOCK_PROJECTS = [
     createdBy: "u1",
     createdAt: "2025-03-01",
     isActive: true,
+    visibility: "private",
+    inviteCode: "FX9K3R",
+    joinRequests: [],
+    maxMembers: 10,
     config: {
       numClients: 10,
       byzantineFraction: 0.2,
@@ -70,6 +78,10 @@ export const MOCK_PROJECTS = [
     createdBy: "u1",
     createdAt: "2025-03-15",
     isActive: true,
+    visibility: "public",
+    inviteCode: null,
+    joinRequests: [],
+    maxMembers: 10,
     config: {
       numClients: 10,
       byzantineFraction: 0.2,

@@ -49,3 +49,20 @@ export function getInitials(name) {
     .join("")
     .toUpperCase();
 }
+
+const INVITE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+/** Generate a random 6-character uppercase alphanumeric invite code */
+export function generateInviteCode() {
+  return Array.from({ length: 6 }, () =>
+    INVITE_CHARS[Math.floor(Math.random() * INVITE_CHARS.length)]
+  ).join("");
+}
+
+/** Validate an invite code against a list of projects. Returns the matching project or null. */
+export function validateInviteCode(code, projects) {
+  if (!code || code.length !== 6) return null;
+  const upper = code.toUpperCase();
+  return projects.find((p) => p.inviteCode === upper) || null;
+}
+
