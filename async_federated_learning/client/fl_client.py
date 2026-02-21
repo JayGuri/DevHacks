@@ -37,11 +37,13 @@ logger = logging.getLogger("fedbuff.client")
 class LEAFLoader:
     """Loads LEAF benchmark data (FEMNIST or Shakespeare) with partitioning."""
 
-    def __init__(self, dataset: str, data_partition: int, partition_count: int = 3,
+    def __init__(self, dataset: str, node_index: int, total_nodes: int = 10,
                  batch_size: int = 32):
         self.dataset = dataset
-        self.data_partition = data_partition
-        self.partition_count = partition_count
+        self.data_partition = node_index       # alias for internal use
+        self.partition_count = total_nodes     # alias for internal use
+        self.node_index = node_index
+        self.total_nodes = total_nodes
         self.batch_size = batch_size
 
         # Data directories
@@ -552,7 +554,8 @@ async def main():
     server_url = os.environ.get("SERVER_URL", "ws://localhost:8765/ws/fl")
     auth_token = os.environ.get("AUTH_TOKEN", "")
     dataset = os.environ.get("DATASET", "femnist")
-    data_partition = int(os.environ.get("DATA_PARTITION", "0"))
+    data_partition = int(os.environ.get("NODE_INDEX", os.environ.get("DATA_PARTITION", "0")))
+    total_nodes = int(os.environ.get("TOTAL_NODES", "10"))
     local_epochs = int(os.environ.get("LOCAL_EPOCHS", "5"))
     learning_rate = float(os.environ.get("LEARNING_RATE", "0.01"))
     mu = float(os.environ.get("MU", "0.01"))
@@ -576,12 +579,12 @@ async def main():
     )
 
     logger.info(
-        "Starting FL client: id=%s, role=%s, dataset=%s, partition=%d",
-        client_id, client_role, dataset, data_partition,
+        "Starting FL client: id=%s, role=%s, dataset=%s, node_index=%d/%d",
+        client_id, client_role, dataset, data_partition, total_nodes,
     )
 
     # Step 1: Load data
-    leaf_loader = LEAFLoader(dataset, data_partition, partition_count=3, batch_size=32)
+    leaf_loader = LEAFLoader(dataset, node_index=data_partition, total_nodes=total_nodes, batch_size=32)
     data_loader = leaf_loader.get_dataloader()
 
     # Step 2: Create model

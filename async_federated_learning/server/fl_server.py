@@ -15,21 +15,27 @@ logger = logging.getLogger("fedbuff.server")
 
 # Module-level auth state
 _jwt_secret: str = None
-_user_registry: dict = {}
 connected_clients: dict = {}
 # {client_id: {"websocket": ws, "role": str, "display_name": str,
 #              "participant": str, "task": str, "connected_at": float,
 #              "last_heartbeat": float, "is_joining": bool}}
 
 
+def init_jwt(secret: str) -> None:
+    """Initialize the JWT secret used for token verification."""
+    global _jwt_secret
+    _jwt_secret = secret
+    logger.info("JWT secret initialized.")
+
+
+# Kept for backwards compatibility — calls init_jwt if the file has a jwt_secret field.
 def load_users(filepath: str) -> None:
-    """Reads users.json, stores jwt_secret and user registry in module state."""
-    global _jwt_secret, _user_registry
+    """Legacy: reads users.json and extracts jwt_secret. Use init_jwt() instead."""
+    global _jwt_secret
     with open(filepath, "r") as f:
         data = json.load(f)
     _jwt_secret = data["jwt_secret"]
-    _user_registry = data["users"]
-    logger.info("Loaded %d users from %s", len(_user_registry), filepath)
+    logger.info("Loaded JWT secret from %s (legacy load_users)", filepath)
 
 
 def verify_token(token: str) -> dict:

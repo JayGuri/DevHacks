@@ -22,6 +22,7 @@ from data.shakespeare_loader import ShakespearePartitioner
 from server.model_history import ModelHistory
 from server.fl_server import (
     load_users,
+    init_jwt,
     verify_token,
     connected_clients,
     require_role,
@@ -29,6 +30,7 @@ from server.fl_server import (
     handle_websocket,
     heartbeat_checker,
 )
+from server.node_registry import NodeRegistry
 from aggregation.aggregator import Aggregator
 from evaluation.metrics import (
     emit_event,
@@ -50,6 +52,7 @@ model_history: ModelHistory = None
 fl_buffer: AsyncBuffer = None
 aggregator: Aggregator = None
 network_simulator = None   # NetworkSimulator | None
+node_registry: NodeRegistry = None
 # Test DataLoaders for server-side evaluation (loaded once at startup)
 _test_dataloaders: dict = {}   # task -> DataLoader | None
 _eval_device: str = "cpu"
@@ -205,20 +208,33 @@ async def aggregation_callback(updates: list, task: str) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle handler."""
-    global model_history, fl_buffer, aggregator, _test_dataloaders, network_simulator
+    global model_history, fl_buffer, aggregator, _test_dataloaders, network_simulator, node_registry
 
     logger.info("FedBuff server starting up...")
 
-    # Step 1: Load users
-    try:
-        load_users(settings.USERS_FILE)
-    except FileNotFoundError:
-        logger.warning(
-            "Users file not found: %s. Run scripts/create_users.py first.",
-            settings.USERS_FILE,
-        )
-    except Exception as e:
-        logger.error("Failed to load users: %s", e)
+    # Step 1: Initialize JWT and NodeRegistry (replaces legacy load_users)
+    if settings.JWT_SECRET:
+        init_jwt(settings.JWT_SECRET)
+        logger.info("JWT initialized from settings.JWT_SECRET")
+    else:
+        # Fallback for backwards compatibility — try legacy users.json
+        try:
+            load_users(settings.USERS_FILE)
+            logger.warning("Loaded JWT from legacy users.json — migrate to setup_server.py")
+        except Exception as e:
+            logger.warning("No JWT_SECRET configured and no users.json: %s", e)
+
+    node_registry = NodeRegistry(
+        registry_file=settings.NODE_REGISTRY_FILE,
+        jwt_secret=settings.JWT_SECRET,
+        max_nodes_per_task=settings.MAX_NODES_PER_TASK,
+    )
+    logger.info(
+        "NodeRegistry initialized: file=%s, max_nodes_per_task=%d, existing_nodes=%d",
+        settings.NODE_REGISTRY_FILE,
+        settings.MAX_NODES_PER_TASK,
+        len(node_registry.list_nodes()),
+    )
 
     # Step 2: Instantiate ModelHistory with initial models
     models = {
@@ -384,6 +400,43 @@ async def prometheus_metrics():
         iter([generate_latest()]),
         media_type=CONTENT_TYPE_LATEST,
     )
+
+
+@app.post("/nodes/register")
+async def register_node(body: dict):
+    """Register a new dynamic FL node. Returns node credentials and JWT token."""
+    task = body.get("task")
+    role = body.get("role", "legitimate_client")
+    display_name = body.get("display_name", "Node")
+    attack_type = body.get("attack_type")
+    attack_scale = body.get("attack_scale")
+
+    if not task:
+        return JSONResponse(status_code=400, content={"error": "task is required"})
+    if task not in settings.SUPPORTED_TASKS:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Unsupported task: {task}. Supported: {settings.SUPPORTED_TASKS}"},
+        )
+
+    try:
+        result = node_registry.register(
+            task=task,
+            role=role,
+            display_name=display_name,
+            attack_type=attack_type,
+            attack_scale=attack_scale,
+        )
+        return result
+    except ValueError as e:
+        return JSONResponse(status_code=409, content={"error": str(e)})
+
+
+@app.get("/nodes")
+async def list_nodes(task: str = Query(default=None)):
+    """List all registered nodes, optionally filtered by task."""
+    nodes = node_registry.list_nodes(task=task)
+    return {"nodes": nodes, "count": len(nodes)}
 
 
 @app.get("/admin/clients")

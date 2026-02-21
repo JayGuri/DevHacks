@@ -31,7 +31,9 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     SERVER_HOST: str = "0.0.0.0"
     SERVER_PORT: int = 8765
-    USERS_FILE: str = "./users.json"
+    USERS_FILE: str = "./users.json"          # Deprecated — use NODE_REGISTRY_FILE
+    NODE_REGISTRY_FILE: str = "./node_registry.json"
+    MAX_NODES_PER_TASK: int = 10              # Max addressable data partitions per task
     LOG_LEVEL: str = "INFO"
     SUPPORTED_TASKS: List[str] = ["femnist", "shakespeare"]
     JWT_EXPIRY_HOURS: int = 24
