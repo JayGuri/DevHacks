@@ -4,9 +4,9 @@
 
 @layer base {
   :root {
-    --font-display: 'Syne', sans-serif;
-    --font-sans: 'DM Sans', sans-serif;
-    --font-mono: 'JetBrains Mono', monospace;
+    --font-display: 'Outfit', sans-serif;
+    --font-sans: 'Plus Jakarta Sans', sans-serif;
+    --font-mono: 'IBM Plex Mono', monospace;
 
     --background: 0 0% 100%;
     --foreground: 222 47% 11%;
