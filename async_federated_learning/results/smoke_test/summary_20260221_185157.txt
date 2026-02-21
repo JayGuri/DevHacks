@@ -1,0 +1,28 @@
+======================================================================
+COMPREHENSIVE ARFL EXPERIMENT RESULTS
+Timestamp: 20260221_185157
+======================================================================
+
+
+Smoke_Test
+----------------------------------------------------------------------
+Configuration:
+  modality: image
+  model: cnn
+  num_clients: 3
+  num_rounds: 2
+  async_mode: False
+  use_gatekeeper: False
+  aggregation_method: fedavg
+  byzantine_fraction: 0
+
+Metrics:
+  total_time: 222.01985573768616
+  avg_round_time: 111.00992786884308
+  final_accuracy: 9.32
+  final_loss: 2.3063709739685057
+  total_processed: 6
+  total_gatekeeper_rejected: 0
+  total_sabd_rejected: 0
+  avg_staleness: 0.0
+
