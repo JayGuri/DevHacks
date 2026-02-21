@@ -7,8 +7,8 @@ from fastapi import APIRouter, HTTPException, Depends
 from datetime import datetime, timezone
 
 from auth.dependencies_mongo import get_current_user, require_team_lead
-from db.mongo_models import User, Project, ProjectMember, JoinRequest, Notification, _assign_node_id
-from join_requests.routes import JoinRequestCreate, JoinRequestResponse
+from db.mongo_models import User, Project, ProjectMember, JoinRequest, Notification
+from join_requests.routes import JoinRequestCreate
 
 router = APIRouter()
 

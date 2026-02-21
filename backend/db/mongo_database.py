@@ -19,6 +19,7 @@ from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from beanie import init_beanie
+from pymongo.errors import OperationFailure
 
 logger = logging.getLogger("arfl.mongo")
 
@@ -29,10 +30,10 @@ _mongo_db = None
 
 def get_mongodb_url() -> str:
     """Get MongoDB connection string from environment."""
-    url = os.getenv("MONGODB_URL", "")
+    url = os.getenv("MONGODB_URL") or os.getenv("MONGO_URI") or ""
     if not url:
         raise RuntimeError(
-            "MONGODB_URL environment variable is required for MongoDB Atlas connection. "
+            "MONGODB_URL (or MONGO_URI) environment variable is required for MongoDB Atlas connection. "
             "Format: mongodb+srv://<user>:<password>@<cluster>.mongodb.net/<database>"
         )
     return url
@@ -40,7 +41,7 @@ def get_mongodb_url() -> str:
 
 def get_database_name() -> str:
     """Get database name from environment."""
-    return os.getenv("DATABASE_NAME", "arfl_platform")
+    return os.getenv("DATABASE_NAME") or os.getenv("MONGO_DB") or "arfl_platform"
 
 
 async def connect_to_mongo():
@@ -117,8 +118,13 @@ async def create_indexes():
 
     # User indexes
     from db.mongo_models import User
-    await User.find_one(User.email == "dummy@example.com").motor_db  # Initialize collection
-    await User.get_motor_collection().create_index("email", unique=True)
+    try:
+        await User.get_motor_collection().create_index("email", unique=True)
+    except OperationFailure as exc:
+        if getattr(exc, "code", None) == 86:
+            logger.warning("Skipping unique email index creation due to existing conflicting index: %s", exc)
+        else:
+            raise
 
     # Project indexes
     from db.mongo_models import Project

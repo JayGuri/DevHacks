@@ -107,7 +107,7 @@ async def get_me(current_user: User = get_current_user):
 
 
 @router.get("/users")
-async def list_users(_: User = require_team_lead):
+async def list_users(team_lead_user: User = require_team_lead):
     """List all users (admin only)."""
     users = await User.find_all().to_list()
     return [_user_to_response(u) for u in users]
@@ -117,7 +117,7 @@ async def list_users(_: User = require_team_lead):
 async def update_role(
     user_id: str,
     body: RoleUpdateRequest,
-    _: User = require_team_lead,
+    team_lead_user: User = require_team_lead,
 ):
     """Change a user's role (admin only)."""
     if body.role not in ("TEAM_LEAD", "CONTRIBUTOR"):
