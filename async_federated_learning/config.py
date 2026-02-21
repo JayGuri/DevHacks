@@ -1,232 +1,205 @@
-"""
-config.py
-=========
-Central configuration module for the async federated learning framework.
-
-Contains:
-- Config dataclass: single source of truth for all hyperparameters covering
-  dataset, model architecture, local training, async behaviour, aggregation,
-  SABD detection, differential privacy, WandB logging, and evaluation.
-- __post_init__ validation and derived-field computation.
-- summary() for human-readable grouped display.
-- to_dict() for serialisation / WandB config upload.
-"""
-
+# config.py — Unified configuration: Pydantic BaseSettings (networking) + scientific hyperparameters
+import os
+import math
 import logging
-from dataclasses import dataclass, field, asdict
+from pydantic_settings import BaseSettings
+from typing import List
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class Config:
-    """
-    Single source of truth for every hyperparameter in the ARFL pipeline.
+class Settings(BaseSettings):
+    """Central configuration for the ARFL / FedBuff system.
+    All values are read from environment variables with sensible defaults.
 
     Covers:
+      - Server networking, JWT, and supported tasks.
+      - FL training hyperparameters (rounds, epochs, learning rates).
       - Dataset & partitioning (Dirichlet non-IID).
       - Byzantine attack type and fraction.
       - Model architecture dimensions.
-      - Local SGD training schedule.
       - Async staleness handling.
-      - Aggregation strategy (FedAvg / TrimmedMean / CoordMedian).
+      - Aggregation strategy selection.
       - SABD anomaly-detection parameters.
       - Differential privacy (DP-SGD).
-      - WandB experiment tracking.
-      - Evaluation cadence and output directory.
-
-    Derived fields (init=False):
-      - num_byzantine_clients: floor(num_clients * byzantine_fraction)
-      - num_honest_clients:    num_clients - num_byzantine_clients
+      - Storage and evaluation settings.
     """
 
     # ------------------------------------------------------------------
-    # Dataset
+    # Server (akshat networking layer)
     # ------------------------------------------------------------------
-    dataset_name: str = "MNIST"
-    data_dir: str = "./data/raw"
-    num_clients: int = 10
-    num_classes: int = 10
+    SERVER_HOST: str = "0.0.0.0"
+    SERVER_PORT: int = 8765
+    USERS_FILE: str = "./users.json"
+    LOG_LEVEL: str = "INFO"
+    SUPPORTED_TASKS: List[str] = ["femnist", "shakespeare"]
+    JWT_EXPIRY_HOURS: int = 24
+    JWT_SECRET: str = ""
 
     # ------------------------------------------------------------------
-    # Byzantine / Attack settings
+    # FL Hyperparameters (merged from both branches)
     # ------------------------------------------------------------------
-    byzantine_fraction: float = 0.2
-    attack_type: str = "sign_flipping"
+    BUFFER_SIZE_K: int = 3
+    NUM_CLIENTS: int = 10
+    NUM_ROUNDS: int = 50
+    LOCAL_EPOCHS: int = 3
+    BATCH_SIZE: int = 32
+    LEARNING_RATE: float = 0.01
+    LEARNING_RATE_GLOBAL: float = 1.0
+    SEED: int = 42
 
     # ------------------------------------------------------------------
-    # Data heterogeneity
+    # Dataset & Partitioning (ayush scientific core)
     # ------------------------------------------------------------------
-    dirichlet_alpha: float = 0.5
+    DATASET_NAME: str = "MNIST"
+    DATA_DIR: str = "./data/raw"
+    NUM_CLASSES: int = 10
+    DIRICHLET_ALPHA: float = 0.5
 
     # ------------------------------------------------------------------
-    # Model
+    # Byzantine / Attack Settings (ayush scientific core)
     # ------------------------------------------------------------------
-    in_channels: int = 1
-    hidden_dim: int = 128
+    BYZANTINE_FRACTION: float = 0.2
+    ATTACK_TYPE: str = "sign_flipping"
 
     # ------------------------------------------------------------------
-    # Local training
+    # Model Architecture (ayush scientific core)
     # ------------------------------------------------------------------
-    num_rounds: int = 50
-    local_epochs: int = 3
-    batch_size: int = 32
-    learning_rate: float = 0.01
-    seed: int = 42
+    IN_CHANNELS: int = 1
+    HIDDEN_DIM: int = 128
 
     # ------------------------------------------------------------------
-    # Async behaviour
+    # Async Behaviour (merged)
     # ------------------------------------------------------------------
-    max_staleness: int = 10
-    staleness_penalty_factor: float = 0.5
-    client_speed_variance: bool = True
+    MAX_STALENESS: int = 10
+    STALENESS_ALPHA: float = 0.5
+    CLIENT_SPEED_VARIANCE: bool = True
 
     # ------------------------------------------------------------------
-    # Aggregation
+    # Aggregation (merged)
     # ------------------------------------------------------------------
-    aggregation_method: str = "trimmed_mean"
-    trimmed_mean_beta: float = 0.1
-    krum_num_byzantine: int = 2
-
-    # ------------------------------------------------------------------
-    # SABD (Staleness-Aware Byzantine Detection)
-    # ------------------------------------------------------------------
-    sabd_alpha: float = 0.5
-    model_history_size: int = 15
-    anomaly_threshold: float = 2.5
+    AGGREGATION_STRATEGY: str = "trimmed_mean"
+    KRUM_BYZANTINE_FRACTION: float = 0.3
+    TRIM_FRACTION: float = 0.2
+    TRIMMED_MEAN_BETA: float = 0.1
+    KRUM_NUM_BYZANTINE: int = 2
 
     # ------------------------------------------------------------------
-    # Differential Privacy
+    # SABD Detection (ayush scientific core)
     # ------------------------------------------------------------------
-    use_dp: bool = True
-    dp_noise_multiplier: float = 0.1
-    dp_clip_norm: float = 1.0
-
-    # ------------------------------------------------------------------
-    # WandB
-    # ------------------------------------------------------------------
-    use_wandb: bool = False
-    wandb_project: str = "arfl-devhacks2026"
+    SABD_ALPHA: float = 0.5
+    MODEL_HISTORY_SIZE: int = 15
+    ANOMALY_THRESHOLD: float = 2.5
 
     # ------------------------------------------------------------------
-    # Evaluation
+    # Defense — Gatekeeper (legacy static threshold as fallback)
     # ------------------------------------------------------------------
-    eval_every_n_rounds: int = 5
-    output_dir: str = "./results"
-
-    # ------------------------------------------------------------------
-    # Derived fields — computed in __post_init__, not set by the caller
-    # ------------------------------------------------------------------
-    num_byzantine_clients: int = field(default=0, init=False, repr=False)
-    num_honest_clients: int = field(default=0, init=False, repr=False)
+    L2_NORM_THRESHOLD: float = 500.0
 
     # ------------------------------------------------------------------
-
-    def __post_init__(self) -> None:
-        """
-        Validate configuration and compute derived fields.
-
-        Checks:
-          1. byzantine_fraction must be < 0.5 (majority-honest assumption).
-          2. CIFAR-10 requires in_channels == 3.
-
-        Derived:
-          - num_byzantine_clients = int(num_clients * byzantine_fraction)
-          - num_honest_clients    = num_clients - num_byzantine_clients
-          - output_dir is created if it does not already exist.
-        """
-        # 1. Majority-honest sanity check
-        if self.byzantine_fraction >= 0.5:
-            raise ValueError(
-                f"byzantine_fraction must be < 0.5 for majority-honest "
-                f"assumption; got {self.byzantine_fraction}."
-            )
-
-        # 2. Derived client counts
-        # num_byzantine_clients = ⌊N · f⌋  where f = byzantine_fraction
-        self.num_byzantine_clients = int(self.num_clients * self.byzantine_fraction)
-        self.num_honest_clients = self.num_clients - self.num_byzantine_clients
-
-        # 3. Create output directory
-        output_path = Path(self.output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        logger.debug("Output directory ensured: %s", output_path.resolve())
-
-        # 4. Channel / dataset consistency check
-        if self.in_channels == 1 and self.dataset_name == "CIFAR10":
-            raise ValueError(
-                "CIFAR10 is an RGB dataset and requires in_channels=3, "
-                f"but in_channels={self.in_channels} was provided."
-            )
-
-        logger.info(
-            "Config validated — clients: %d (%d Byzantine, %d honest), "
-            "attack: %s, aggregation: %s, DP: %s",
-            self.num_clients,
-            self.num_byzantine_clients,
-            self.num_honest_clients,
-            self.attack_type,
-            self.aggregation_method,
-            self.use_dp,
-        )
+    # Differential Privacy (merged)
+    # ------------------------------------------------------------------
+    USE_DP: bool = True
+    DP_MAX_GRAD_NORM: float = 1.0
+    DP_NOISE_MULTIPLIER: float = 1.1
+    DP_CLIP_NORM: float = 1.0
 
     # ------------------------------------------------------------------
+    # WandB (ayush scientific core)
+    # ------------------------------------------------------------------
+    USE_WANDB: bool = False
+    WANDB_PROJECT: str = "arfl-devhacks2026"
+
+    # ------------------------------------------------------------------
+    # Evaluation & Storage (merged)
+    # ------------------------------------------------------------------
+    EVAL_EVERY_N_ROUNDS: int = 5
+    MODEL_CHECKPOINT_DIR: str = "./results/checkpoints"
+    RESULTS_DIR: str = "./results"
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+    # ------------------------------------------------------------------
+    # Derived properties
+    # ------------------------------------------------------------------
+
+    @property
+    def num_byzantine_clients(self) -> int:
+        """Number of Byzantine clients = floor(NUM_CLIENTS * BYZANTINE_FRACTION)."""
+        return int(self.NUM_CLIENTS * self.BYZANTINE_FRACTION)
+
+    @property
+    def num_honest_clients(self) -> int:
+        """Number of honest clients = NUM_CLIENTS - num_byzantine_clients."""
+        return self.NUM_CLIENTS - self.num_byzantine_clients
 
     def summary(self) -> None:
         """Print a formatted, grouped table of all configuration settings."""
         groups = {
+            "Server": [
+                ("SERVER_HOST", self.SERVER_HOST),
+                ("SERVER_PORT", self.SERVER_PORT),
+                ("LOG_LEVEL", self.LOG_LEVEL),
+                ("SUPPORTED_TASKS", self.SUPPORTED_TASKS),
+            ],
             "Dataset": [
-                ("dataset_name", self.dataset_name),
-                ("data_dir", self.data_dir),
-                ("num_clients", self.num_clients),
-                ("num_classes", self.num_classes),
-                ("dirichlet_alpha", self.dirichlet_alpha),
+                ("DATASET_NAME", self.DATASET_NAME),
+                ("DATA_DIR", self.DATA_DIR),
+                ("NUM_CLIENTS", self.NUM_CLIENTS),
+                ("NUM_CLASSES", self.NUM_CLASSES),
+                ("DIRICHLET_ALPHA", self.DIRICHLET_ALPHA),
             ],
             "Byzantine / Attack": [
-                ("byzantine_fraction", self.byzantine_fraction),
-                ("attack_type", self.attack_type),
+                ("BYZANTINE_FRACTION", self.BYZANTINE_FRACTION),
+                ("ATTACK_TYPE", self.ATTACK_TYPE),
                 ("num_byzantine_clients", self.num_byzantine_clients),
                 ("num_honest_clients", self.num_honest_clients),
             ],
             "Model": [
-                ("in_channels", self.in_channels),
-                ("hidden_dim", self.hidden_dim),
+                ("IN_CHANNELS", self.IN_CHANNELS),
+                ("HIDDEN_DIM", self.HIDDEN_DIM),
             ],
-            "Local Training": [
-                ("num_rounds", self.num_rounds),
-                ("local_epochs", self.local_epochs),
-                ("batch_size", self.batch_size),
-                ("learning_rate", self.learning_rate),
-                ("seed", self.seed),
+            "Training": [
+                ("NUM_ROUNDS", self.NUM_ROUNDS),
+                ("LOCAL_EPOCHS", self.LOCAL_EPOCHS),
+                ("BATCH_SIZE", self.BATCH_SIZE),
+                ("LEARNING_RATE", self.LEARNING_RATE),
+                ("BUFFER_SIZE_K", self.BUFFER_SIZE_K),
+                ("SEED", self.SEED),
             ],
             "Async Behaviour": [
-                ("max_staleness", self.max_staleness),
-                ("staleness_penalty_factor", self.staleness_penalty_factor),
-                ("client_speed_variance", self.client_speed_variance),
+                ("MAX_STALENESS", self.MAX_STALENESS),
+                ("STALENESS_ALPHA", self.STALENESS_ALPHA),
+                ("CLIENT_SPEED_VARIANCE", self.CLIENT_SPEED_VARIANCE),
             ],
             "Aggregation": [
-                ("aggregation_method", self.aggregation_method),
-                ("trimmed_mean_beta", self.trimmed_mean_beta),
-                ("krum_num_byzantine", self.krum_num_byzantine),
+                ("AGGREGATION_STRATEGY", self.AGGREGATION_STRATEGY),
+                ("TRIMMED_MEAN_BETA", self.TRIMMED_MEAN_BETA),
+                ("KRUM_NUM_BYZANTINE", self.KRUM_NUM_BYZANTINE),
             ],
             "SABD Detection": [
-                ("sabd_alpha", self.sabd_alpha),
-                ("model_history_size", self.model_history_size),
-                ("anomaly_threshold", self.anomaly_threshold),
+                ("SABD_ALPHA", self.SABD_ALPHA),
+                ("MODEL_HISTORY_SIZE", self.MODEL_HISTORY_SIZE),
+                ("ANOMALY_THRESHOLD", self.ANOMALY_THRESHOLD),
+            ],
+            "Gatekeeper": [
+                ("use_gatekeeper", self.use_gatekeeper),
+                ("gatekeeper_l2_factor", self.gatekeeper_l2_factor),
+                ("gatekeeper_max_threshold", self.gatekeeper_max_threshold),
             ],
             "Differential Privacy": [
-                ("use_dp", self.use_dp),
-                ("dp_noise_multiplier", self.dp_noise_multiplier),
-                ("dp_clip_norm", self.dp_clip_norm),
+                ("USE_DP", self.USE_DP),
+                ("DP_NOISE_MULTIPLIER", self.DP_NOISE_MULTIPLIER),
+                ("DP_CLIP_NORM", self.DP_CLIP_NORM),
             ],
-            "WandB": [
-                ("use_wandb", self.use_wandb),
-                ("wandb_project", self.wandb_project),
-            ],
-            "Evaluation": [
-                ("eval_every_n_rounds", self.eval_every_n_rounds),
-                ("output_dir", self.output_dir),
+            "Storage": [
+                ("MODEL_CHECKPOINT_DIR", self.MODEL_CHECKPOINT_DIR),
+                ("RESULTS_DIR", self.RESULTS_DIR),
             ],
         }
 
@@ -247,8 +220,5 @@ class Config:
 
         print()
 
-    # ------------------------------------------------------------------
 
-    def to_dict(self) -> dict:
-        """Return all configuration fields as a plain dict (via dataclasses.asdict)."""
-        return asdict(self)
+settings = Settings()

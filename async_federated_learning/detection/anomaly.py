@@ -1,93 +1,76 @@
+# detection/anomaly.py — AnomalyDetector (3-signal composite) + legacy check_l2_norm
 """
 detection/anomaly.py
 ====================
-Three-signal composite Byzantine detector operating on SABD-corrected gradients.
+Contains:
+- AnomalyDetector: three-signal composite Byzantine detector (norm z-score,
+  cosine divergence, loss consistency) with SABD correction support.
+- check_l2_norm(): legacy static L2 norm pre-filter for backward compatibility.
 
-Signals
--------
-1. **Gradient norm z-score**: catches gradient scaling attacks where ‖g_i‖
-   is a statistical outlier relative to the population of updates this round.
-
-2. **Cosine divergence (SABD-corrected)**: catches sign-flipping and direction
-   attacks.  When ``sabd_corrector`` is provided the corrected gradient g*_i
-   is used instead of the raw g_i — this removes staleness artefacts so that
-   honest-but-stale clients are not falsely flagged.
-
-3. **Loss consistency z-score**: catches free riders and clients whose reported
-   training loss is inconsistent with the magnitude of their gradient update
-   (they claim to have trained but the loss signal is anomalous).
-
-Composite score = arithmetic mean of the three z-scores.
-Threshold (default 2.5 σ) is tunable via ``__init__``.
-
-Key property: the cosine signal uses g_i* not g_i when SABD is attached — this
-is what makes the detector staleness-aware rather than staleness-penalising.
-
-Reputation tracking
--------------------
-``_update_reputation`` accumulates composite scores per client over all rounds.
-``get_reputation_weights`` converts the last-5-rounds average score into a
-normalised trust weight: lower score → higher weight (more trusted).  These
-weights feed directly into ``reputation_aggregated()``.
+The AnomalyDetector uses SABD-corrected gradients when available, so honest-but-stale
+clients are not falsely flagged.
 """
+from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from async_federated_learning.detection.sabd import SABDCorrector
+if TYPE_CHECKING:
+    from detection.sabd import SABDCorrector
 
 logger = logging.getLogger(__name__)
 
 
-class AnomalyDetector:
+# ---------------------------------------------------------------------------
+# Legacy static gatekeeper (from akshat — kept for WebSocket router compat)
+# ---------------------------------------------------------------------------
+
+def check_l2_norm(weight_diff: dict, threshold: float) -> tuple:
+    """First line of defense. Flattens all arrays and checks L2 norm.
+
+    Returns:
+        (passed: bool, norm: float)
+        passed = True if norm <= threshold (safe)
+        passed = False if norm > threshold (reject)
     """
-    Three-signal composite Byzantine detector.
+    flat = np.concatenate([v.flatten() for v in weight_diff.values()])
+    norm = float(np.linalg.norm(flat))
+    passed = norm <= threshold
+    if not passed:
+        logger.warning("L2 norm check FAILED: norm=%.4f > threshold=%.4f", norm, threshold)
+    else:
+        logger.debug("L2 norm check passed: norm=%.4f <= threshold=%.4f", norm, threshold)
+    return passed, norm
 
-    Signals (all computed per-round on the arriving batch of updates):
 
-    1. Gradient norm z-score
-       ``z_norm = |‖g_i‖ − μ_norm| / (σ_norm + ε)``
-       Flags gradient-scaling attacks — a scaled gradient has a norm far
-       outside the population distribution.
+# ---------------------------------------------------------------------------
+# Advanced AnomalyDetector (from ayush — stateful, 3-signal composite)
+# ---------------------------------------------------------------------------
 
-    2. Cosine divergence z-score
-       ``z_cos = corrected_divergence_i``
-       When ``sabd_corrector`` is set, uses the SABD-corrected gradient g*_i
-       so that honest-but-stale clients are not penalised for drift.  Without
-       SABD falls back to raw cosine divergence from consensus.
+class AnomalyDetector:
+    """Three-signal composite Byzantine detector.
 
-    3. Loss z-score
-       ``z_loss = |loss_i − μ_loss| / (σ_loss + ε)``
-       Flags clients whose reported training loss is inconsistent with the
-       population (free riders, loss-spoofing Byzantine nodes).
+    Signals:
+    1. Gradient norm z-score — catches gradient scaling attacks.
+    2. Cosine divergence (SABD-corrected) — catches sign-flip/direction attacks.
+    3. Loss consistency z-score — catches free riders and loss spoofing.
 
     Composite score = mean(z_norm, z_cos, z_loss).
-    A client is flagged Byzantine if composite > ``threshold``.
+    Client flagged Byzantine if composite > threshold.
 
     Parameters
     ----------
-    threshold       : float
-        Composite score threshold above which a client is flagged Byzantine.
-        Default 2.5 σ.  Lower → more aggressive detection (more false positives).
-    sabd_corrector  : SABDCorrector | None
-        If provided, the cosine signal uses SABD-corrected gradients.
-        If None, raw cosine divergence from consensus is used (legacy mode).
+    threshold      : float — composite score threshold (default 2.5 sigma).
+    sabd_corrector : SABDCorrector | None — if provided, cosine uses corrected gradients.
     """
 
-    def __init__(
-        self,
-        threshold: float = 2.5,
-        sabd_corrector: SABDCorrector = None,
-    ):
+    def __init__(self, threshold: float = 2.5, sabd_corrector: SABDCorrector = None):
         self.threshold = threshold
-        self.sabd_corrector = sabd_corrector  # None = no SABD correction (legacy mode)
-
-        # client_id → list[float] of composite scores across all rounds
+        self.sabd_corrector = sabd_corrector
         self._reputation_history: dict = defaultdict(list)
-
-        # composite scores for the *current* round (reset each call to score_update)
         self._round_scores: dict = {}
 
         logger.info(
@@ -96,42 +79,20 @@ class AnomalyDetector:
             "attached" if sabd_corrector is not None else "None (legacy mode)",
         )
 
-    # ------------------------------------------------------------------
-    # Public scoring API
-    # ------------------------------------------------------------------
-
-    def score_update(
-        self,
-        update,
-        all_updates: list,
-        current_weights: dict,
-    ) -> float:
-        """
-        Compute the composite Byzantine score for one client update.
-
-        Three signals are combined:
-        1. Gradient norm z-score       — gradient scaling detection
-        2. Cosine divergence           — direction attack detection (SABD-aware)
-        3. Training loss z-score       — free-rider / loss-spoofing detection
+    def score_update(self, update, all_updates: list, current_weights: dict) -> float:
+        """Compute composite Byzantine score for one client update.
 
         Parameters
         ----------
-        update        : ClientUpdate
-            The update being scored (has ``.client_id``, ``.weight_delta``,
-            ``.round_number``, ``.training_loss``, ``.num_samples``).
-        all_updates   : list[ClientUpdate]
-            All updates received this round, including ``update`` itself.
-            Used to compute population statistics for z-scores.
-        current_weights : dict[str, np.ndarray]
-            Current global model weights θ_t (used by SABD correction).
+        update          : ClientUpdate with .client_id, .weight_delta, .round_number, .training_loss
+        all_updates     : list[ClientUpdate] — all updates this round
+        current_weights : dict[str, np.ndarray] — current global model weights
 
         Returns
         -------
-        float
-            Composite anomaly score.  Higher → more suspicious.
+        float — composite anomaly score (higher = more suspicious)
         """
-        # ── Signal 1: Gradient norm z-score ─────────────────────────────
-        # ‖g_i‖ = L2 norm of the flattened weight delta
+        # Signal 1: Gradient norm z-score
         all_norms = [
             float(np.linalg.norm(
                 np.concatenate([v.flatten() for v in u.weight_delta.values()])
@@ -139,14 +100,12 @@ class AnomalyDetector:
             for u in all_updates
         ]
         my_norm = all_norms[all_updates.index(update)]
-        # z_norm = |‖g_i‖ − μ_norm| / (σ_norm + ε)
         norm_score = self._z_score(my_norm, all_norms)
 
-        # ── Signal 2: Cosine divergence (SABD-corrected if available) ────
+        # Signal 2: Cosine divergence (SABD-corrected if available)
         consensus = self._compute_consensus(all_updates)
 
         if self.sabd_corrector is not None:
-            # Use SABD-corrected gradient to remove staleness artefacts
             g_star = self.sabd_corrector.correct(
                 update.weight_delta, update.round_number, current_weights
             )
@@ -159,117 +118,65 @@ class AnomalyDetector:
             self.sabd_corrector.log_separation(
                 raw_div, corrected_div, update.client_id, update.round_number
             )
-            # Use corrected divergence as cosine signal — honest-but-stale
-            # clients are not unfairly penalised
             cosine_score = corrected_div
         else:
-            # Legacy mode: raw cosine divergence from consensus
-            g_flat = np.concatenate(
-                [v.flatten() for v in update.weight_delta.values()]
-            )
+            g_flat = np.concatenate([v.flatten() for v in update.weight_delta.values()])
             c_flat = np.concatenate([v.flatten() for v in consensus.values()])
-            # 1 − cos(g_i, consensus) — higher when anti-aligned
             cosine_score = 1.0 - float(
                 np.dot(g_flat, c_flat)
                 / (np.linalg.norm(g_flat) * np.linalg.norm(c_flat) + 1e-8)
             )
 
-        # ── Signal 3: Loss consistency z-score ──────────────────────────
-        # z_loss = |loss_i − μ_loss| / (σ_loss + ε)
+        # Signal 3: Loss consistency z-score
         all_losses = [u.training_loss for u in all_updates]
         loss_score = self._z_score(update.training_loss, all_losses)
 
-        # ── Composite score ─────────────────────────────────────────────
-        # arithmetic mean of the three z-scores
+        # Composite score = mean of the three z-scores
         composite = float(np.mean([norm_score, cosine_score, loss_score]))
 
         self._round_scores[update.client_id] = composite
         self._update_reputation(update.client_id, composite)
 
         logger.debug(
-            "score_update — client=%d, norm_z=%.4f, cosine=%.4f, loss_z=%.4f, "
+            "score_update — client=%s, norm_z=%.4f, cosine=%.4f, loss_z=%.4f, "
             "composite=%.4f, flagged=%s.",
-            update.client_id,
-            norm_score,
-            cosine_score,
-            loss_score,
-            composite,
-            composite > self.threshold,
+            update.client_id, norm_score, cosine_score, loss_score,
+            composite, composite > self.threshold,
         )
         return composite
 
     def is_byzantine(self, composite_score: float) -> bool:
-        """
-        Return True if the composite score exceeds the detection threshold.
-
-        Parameters
-        ----------
-        composite_score : float   Output of ``score_update()``.
-
-        Returns
-        -------
-        bool   True → client flagged as Byzantine suspect.
-        """
+        """Return True if composite score exceeds the detection threshold."""
         return composite_score > self.threshold
 
     # ------------------------------------------------------------------
     # Reputation management
     # ------------------------------------------------------------------
 
-    def _update_reputation(self, client_id: int, score: float) -> None:
-        """Append the latest composite score to the client's history."""
+    def _update_reputation(self, client_id, score: float) -> None:
+        """Append composite score to client's history."""
         self._reputation_history[client_id].append(score)
 
     def get_reputation_history(self) -> dict:
-        """
-        Return the full per-client composite score history.
-
-        Returns
-        -------
-        dict[int, list[float]]
-            ``client_id → [score_round_1, score_round_2, …]``
-        """
+        """Return full per-client composite score history."""
         return dict(self._reputation_history)
 
     def get_reputation_weights(self, client_ids: list) -> list:
-        """
-        Convert reputation histories to normalised trust weights.
-
-        Formula (per client i)::
-
-            raw_i = max(0.01, 1 / (1 + avg_score_i))
-
-        where ``avg_score_i`` is the mean of the last 5 composite scores
-        (or 0.5 for clients with no history yet).
-
-        Lower composite score → higher raw weight → higher trust.
-        Weights are then L1-normalised to sum to 1.0.
-
-        Parameters
-        ----------
-        client_ids : list[int]   Ordered list of client identifiers.
-
-        Returns
-        -------
-        list[float]
-            Normalised trust weights, same order as ``client_ids``.
+        """Convert reputation histories to normalised trust weights.
+        Lower composite score -> higher weight -> more trusted.
         """
         scores = []
         for cid in client_ids:
             hist = self._reputation_history.get(cid, [])
-            # Use last 5 rounds only — older behaviour should decay
             avg_score = float(np.mean(hist[-5:])) if hist else 0.5
-            # Inverted: lower score → higher weight.  Floor at 0.01 to avoid zero.
             scores.append(max(0.01, 1.0 / (1.0 + avg_score)))
 
-        # L1-normalise to a probability distribution
         total = sum(scores)
         norm = [s / total for s in scores]
 
         logger.debug(
             "get_reputation_weights — clients=%s, weights=%s.",
-            client_ids,
-            [f"{w:.4f}" for w in norm],
+            client_ids, [f"{w:.4f}" for w in norm],
         )
         return norm
 
@@ -278,46 +185,15 @@ class AnomalyDetector:
     # ------------------------------------------------------------------
 
     def _z_score(self, value: float, population: list) -> float:
-        """
-        Absolute z-score of ``value`` within ``population``.
-
-        Formula::
-
-            z = |value − μ| / (σ + ε)
-
-        Returns 0.0 for populations of size < 2 (undefined standard deviation).
-
-        Parameters
-        ----------
-        value      : float   The scalar to score.
-        population : list    All values including ``value`` itself.
-
-        Returns
-        -------
-        float   Non-negative z-score.
-        """
+        """Absolute z-score of value within population. Returns 0.0 for <2 samples."""
         if len(population) < 2:
             return 0.0
         mean = float(np.mean(population))
         std = float(np.std(population))
-        # z = |value − μ| / (σ + ε)
         return float(abs(value - mean) / (std + 1e-8))
 
     def _compute_consensus(self, all_updates: list) -> dict:
-        """
-        Compute the simple (unweighted) mean of all weight deltas as the
-        consensus reference direction for the cosine divergence signal.
-
-        Parameters
-        ----------
-        all_updates : list[ClientUpdate]
-            All updates for this round.
-
-        Returns
-        -------
-        dict[str, np.ndarray]
-            Coordinate-wise mean update across all clients.
-        """
+        """Simple unweighted mean of all weight deltas as consensus reference."""
         keys = list(all_updates[0].weight_delta.keys())
         return {
             k: np.mean([u.weight_delta[k] for u in all_updates], axis=0)
