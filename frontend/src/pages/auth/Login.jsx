@@ -15,19 +15,19 @@ const Login = memo(() => {
   const reducedMotion = useReducedMotion();
 
   return (
-    <div className="flex min-h-screen bg-slate-950 selection:bg-cyan-500/30">
+    <div className="flex min-h-screen bg-background selection:bg-primary/30 transition-colors duration-500">
       {/* Background Grid Pattern - Fixed to stay behind everything */}
       <div className="fixed inset-0 opacity-[0.03] pointer-events-none z-0">
         <svg className="h-full w-full">
           <pattern id="login-grid" width="40" height="40" patternUnits="userSpaceOnUse">
-            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="white" strokeWidth="1" />
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="currentColor" strokeWidth="1" className="text-foreground" />
           </pattern>
           <rect width="100%" height="100%" fill="url(#login-grid)" />
         </svg>
       </div>
 
       {/* Left Panel: 3D Scene - Enhanced with technical decor */}
-      <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden items-center justify-center bg-slate-950 border-r border-white/5">
+      <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden items-center justify-center bg-card border-r border-border transition-colors duration-500">
         {/* Decorative Technical Elements to fill space */}
         <div className="absolute top-12 left-12 space-y-2 z-20 opacity-30">
           <div className="flex items-center gap-2">
@@ -94,20 +94,20 @@ const Login = memo(() => {
             className="space-y-6"
           >
             <div className="flex items-center gap-3">
-              <div className="h-8 w-8 bg-cyan-500 transform rotate-45 rounded-sm shadow-[0_0_25px_rgba(6,182,212,0.4)] flex items-center justify-center">
-                <div className="h-3 w-3 bg-slate-950 rotate-45 rounded-xs" />
+              <div className="h-8 w-8 bg-primary transform rotate-45 rounded-sm shadow-[0_0_25px_rgba(var(--primary),0.4)] flex items-center justify-center">
+                <div className="h-3 w-3 bg-background rotate-45 rounded-xs" />
               </div>
               <div>
-                <h1 className="metric-value text-white text-4xl tracking-tighter leading-none">ARFL</h1>
-                <p className="metric-label text-cyan-500/80 text-[8px] mt-1 tracking-[0.4em]">CONTROL CORE</p>
+                <h1 className="metric-value text-foreground text-4xl tracking-tighter leading-none">ARFL</h1>
+                <p className="metric-label text-primary/80 text-[8px] mt-1 tracking-[0.4em]">CONTROL CORE</p>
               </div>
             </div>
             
             <div className="space-y-3">
-              <h2 className="text-white text-3xl font-display font-bold leading-tight tracking-tight">
-                Control <span className="text-transparent bg-clip-text bg-gradient-to-r from-white to-white/50">Decentralized Intel.</span>
+              <h2 className="text-foreground text-3xl font-display font-bold leading-tight tracking-tight">
+                Control <span className="text-transparent bg-clip-text bg-gradient-to-r from-foreground to-foreground/50">Decentralized Intel.</span>
               </h2>
-              <p className="text-slate-400 leading-relaxed text-sm max-w-[95%] font-medium">
+              <p className="text-muted-foreground leading-relaxed text-sm max-w-[95%] font-medium">
                 Robust federated training with real-time Byzantine resistance.
               </p>
             </div>
@@ -127,17 +127,17 @@ const Login = memo(() => {
             className="relative group lg:mt-4"
           >
             {/* Glossy Border Effect */}
-            <div className="absolute -inset-[1px] bg-gradient-to-b from-white/10 via-white/5 to-transparent rounded-2xl -z-10 group-hover:from-cyan-400/20 transition-colors duration-500" />
+            <div className="absolute -inset-[1px] bg-gradient-to-b from-foreground/10 via-foreground/5 to-transparent rounded-2xl -z-10 group-hover:from-primary/20 transition-colors duration-500" />
             
-            <div className="card-base bg-slate-900/30 backdrop-blur-xl border-white/5 p-6 lg:p-8 shadow-2xl rounded-2xl">
+            <div className="card-base bg-card/30 backdrop-blur-xl border-border/50 p-6 lg:p-8 shadow-2xl rounded-2xl transition-colors duration-500">
               <LoginForm />
             </div>
 
             {/* Subtle glow behind login box */}
-            <div className="absolute -bottom-10 left-1/2 -translate-x-1/2 w-2/3 h-10 bg-cyan-500/5 blur-3xl opacity-30" />
+            <div className="absolute -bottom-10 left-1/2 -translate-x-1/2 w-2/3 h-10 bg-primary/5 blur-3xl opacity-30" />
           </motion.div>
 
-          <div className="text-slate-600 text-[8px] font-mono tracking-[0.3em] uppercase text-center pt-4 opacity-40">
+          <div className="text-muted-foreground/40 text-[8px] font-mono tracking-[0.3em] uppercase text-center pt-4 opacity-40">
             AUTHENTICATION PROTOCOL v1.0 // 2026
           </div>
         </div>

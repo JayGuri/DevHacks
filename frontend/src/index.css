@@ -24,8 +24,9 @@
     --accent-foreground: 220 14% 20%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 210 40% 98%;
-    --border: 220 13% 91%;
-    --input: 220 13% 91%;
+    /* Black Borders for Light Mode - Crisp and clear */
+    --border: 224 15% 10%;
+    --input: 224 15% 15%;
     --ring: 191 91% 36%;
     --chart-1: 191 91% 36%;
     --chart-2: 173 58% 39%;
@@ -64,8 +65,9 @@
     --accent-foreground: 213 31% 94%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 213 31% 94%;
-    --border: 222 47% 12%;
-    --input: 222 47% 12%;
+    /* White Borders for Dark Mode (high contrast but elegant) */
+    --border: 213 31% 85% / 0.2;
+    --input: 213 31% 85% / 0.15;
     --ring: 184 100% 45%;
     --accent-glow: rgba(0, 240, 255, 0.15);
   }
@@ -73,14 +75,33 @@
 
 @layer base {
   * {
-    @apply border-border;
+    /* Prevent layout shifts by standardizing text rendering and removing ad-hoc borders */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   body {
-    @apply bg-background text-foreground font-sans antialiased;
+    @apply bg-background text-foreground font-sans;
     overflow-x: hidden;
+    /* Prevent layout jumping when content changes height */
+    scrollbar-gutter: stable;
   }
 }
+
+/* Force smooth theme transition across the entire tree */
+.theme-transitioning,
+.theme-transitioning *,
+.theme-transitioning *::before,
+.theme-transitioning *::after {
+  transition-delay: 0s !important;
+  transition-duration: 700ms !important;
+  transition-property: background-color, border-color, color, fill, stroke, box-shadow, opacity !important;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1) !important;
+  /* Lock layout and interaction to prevent jumps or noise during transition */
+  pointer-events: none !important;
+}
+
 
 /* Typography Refinement */
 .text-display {
@@ -116,7 +137,11 @@
 }
 
 .dark .card-elevated {
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.2);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.4),
+    0 8px 24px -8px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  /* Subtle inner gleam */
 }
 
 /* Badge Redesign */

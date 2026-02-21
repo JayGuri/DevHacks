@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useLocation } from "react-router-dom";
 import { useTheme } from "next-themes";
 import {
   Sun, Moon, ChevronRight, LogOut, Bell,
@@ -65,6 +65,10 @@ export default function TopNav({ breadcrumbs = [] }) {
     navigate("/login");
   }
 
+  const location = useLocation();
+  const hideTogglePaths = ['/dashboard/projects', '/admin/requests'];
+  const showViewToggle = !hideTogglePaths.includes(location.pathname);
+
   return (
     <header className="fixed left-0 right-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-background/95 px-4 backdrop-blur-sm lg:left-60 lg:px-6">
       {/* Left: breadcrumbs with Home icon */}
@@ -109,7 +113,7 @@ export default function TopNav({ breadcrumbs = [] }) {
           <span>K</span>
         </button>
 
-        <ViewToggle />
+        {showViewToggle && <ViewToggle />}
 
         {/* Notification bell */}
         <Popover>
@@ -180,7 +184,18 @@ export default function TopNav({ breadcrumbs = [] }) {
           </PopoverContent>
         </Popover>
 
-        <Button variant="ghost" size="icon" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+        <Button 
+          variant="ghost" 
+          size="icon" 
+          onClick={() => {
+            const el = document.documentElement;
+            el.classList.add("theme-transitioning");
+            setTheme(theme === "dark" ? "light" : "dark");
+            setTimeout(() => {
+              el.classList.remove("theme-transitioning");
+            }, 700);
+          }}
+        >
           {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
         </Button>
 
