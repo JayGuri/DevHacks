@@ -82,7 +82,7 @@ const SABDPanel = memo(({
       variants={fadeInUp}
       initial="hidden"
       animate="visible"
-      className="space-y-6"
+      className="space-y-6 min-w-0"
     >
       {/* Metric cards */}
       <div className="flex flex-col gap-4 sm:flex-row">

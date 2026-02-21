@@ -97,6 +97,7 @@ export default function PrivacyGauge({ latestRound, viewMode }) {
       variants={fadeInUp}
       initial="hidden"
       animate="visible"
+      className="min-w-0"
     >
       {viewMode === "simple" ? (
         <TooltipProvider delayDuration={300}>

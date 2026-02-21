@@ -74,6 +74,7 @@
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
+    overflow-x: hidden;
   }
 }
 
@@ -165,6 +166,10 @@
 .empty-state-bg {
   background-image: radial-gradient(circle, hsl(var(--muted-foreground) / 0.12) 1px, transparent 1px);
   background-size: 24px 24px;
+}
+
+.recharts-responsive-container {
+  min-width: 0 !important;
 }
 
 /* Animations */

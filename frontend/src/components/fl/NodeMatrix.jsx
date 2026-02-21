@@ -111,7 +111,7 @@ const NodeMatrix = memo(({
             ))}
           </div>
 
-          <div className="card-base overflow-hidden">
+          <div className="card-base overflow-x-auto">
             <Table>
               <TableHeader className="table-header">
                 <TableRow>

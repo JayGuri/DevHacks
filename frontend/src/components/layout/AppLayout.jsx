@@ -30,7 +30,7 @@ export default function AppLayout({ children, pageHeader }) {
   return (
     <div className="flex">
       <Sidebar />
-      <div className="flex min-h-screen flex-1 flex-col lg:ml-60">
+      <div className="flex min-h-screen flex-1 flex-col lg:ml-60 min-w-0">
         <TopNav breadcrumbs={breadcrumbs} />
         {pageHeader && (
           <div className="pt-14">

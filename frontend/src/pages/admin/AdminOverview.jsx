@@ -130,7 +130,7 @@ export default function AdminOverview() {
           <CardHeader>
             <CardTitle className="text-sm">Multi-Project Convergence</CardTitle>
           </CardHeader>
-          <CardContent className="h-72 min-h-[200px]">
+          <CardContent className="h-72 min-h-[200px] min-w-0">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
@@ -146,7 +146,7 @@ export default function AdminOverview() {
         </Card>
 
         {/* Right: cluster health */}
-        <Card className="lg:col-span-2">
+        <Card className="lg:col-span-2 min-w-0">
           <CardHeader>
             <CardTitle className="text-sm">Cluster Health</CardTitle>
           </CardHeader>
@@ -201,7 +201,7 @@ export default function AdminOverview() {
       </div>
 
       {byzantineNodes.length > 0 && (
-        <div className="overflow-x-auto rounded-md border border-border">
+        <div className="overflow-x-auto rounded-md border border-border min-w-0">
           <Table>
             <TableHeader>
               <TableRow>

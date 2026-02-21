@@ -57,9 +57,9 @@ const ConvergenceChart = memo(({ rounds, viewMode }) => {
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="h-full w-full flex flex-col"
+      className="h-full w-full flex flex-col min-w-0"
     >
-      <div className="flex-1 min-h-0 card-base bg-card/10 backdrop-blur-[2px] p-4">
+      <div className="flex-1 min-h-0 min-w-0 card-base bg-card/10 backdrop-blur-[2px] p-4">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data}>
             <CartesianGrid strokeDasharray="3 3" stroke={COLORS.grid} vertical={false} />

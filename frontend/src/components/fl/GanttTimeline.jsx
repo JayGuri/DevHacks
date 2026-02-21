@@ -205,7 +205,7 @@ const GanttTimeline = memo(({
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="flex h-full w-full flex-col"
+      className="flex h-full w-full flex-col min-w-0"
     >
       <div ref={containerRef} className="flex-1 card-base bg-card/10 backdrop-blur-[2px] overflow-hidden">
         <canvas ref={canvasRef} className="h-full w-full" />
