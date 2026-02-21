@@ -2,13 +2,14 @@ import { useState, useMemo } from "react";
 import { useParams, Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
-import { Cpu, Globe, LockKeyhole } from "lucide-react";
+import { Cpu, Globe, LockKeyhole, Shield, Clock, Activity, Hash, Gauge, Layers, CheckCircle, XCircle } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import { useStore } from "@/lib/store";
 import useFL from "@/hooks/useFL";
 import useContributorStats from "@/hooks/useContributorStats";
 import { formatPercent, getTrustColor, cn } from "@/lib/utils";
-import { isProjectLead, getUserProjectRole, getPendingRequests, getAllProjects } from "@/lib/projectUtils";
+import { isProjectLead, getUserProjectRole, getPendingRequests } from "@/lib/projectUtils";
 import { MOCK_USERS } from "@/lib/mockData";
 import AppLayout from "@/components/layout/AppLayout";
 import StatCard from "@/components/dashboard/StatCard";
@@ -20,33 +21,23 @@ import GanttTimeline from "@/components/fl/GanttTimeline";
 import PrivacyGauge from "@/components/fl/PrivacyGauge";
 import SABDPanel from "@/components/fl/SABDPanel";
 import ControlPanel from "@/components/admin/ControlPanel";
+import PageSkeleton from "@/components/dashboard/PageSkeleton";
+import AnimatedNumber from "@/components/ui/AnimatedNumber";
+import { fadeIn } from "@/lib/animations";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import {
-  Shield, Clock, Activity, Hash, Gauge, Layers,
-  CheckCircle, XCircle,
-} from "lucide-react";
 
 const SESSION_KEY = (id) => `tab-${id}-project-detail`;
 const VALID_TABS = ["mynode", "server", "admin"];
-
-function getInitialTab(id, amLead) {
-  // 1. Check URL param
-  // (handled in parent via searchParams)
-  // 2. Fall back to sessionStorage
-  const saved = sessionStorage.getItem(SESSION_KEY(id));
-  if (saved && VALID_TABS.includes(saved)) return saved;
-  return "mynode";
-}
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -59,7 +50,6 @@ export default function ProjectDetail() {
 
   const amLead = isProjectLead(currentUser?.id, id, store);
 
-  // Determine active tab: URL > sessionStorage > default
   const urlTab = searchParams.get("tab");
   const savedTab = sessionStorage.getItem(SESSION_KEY(id));
   const defaultTab =
@@ -69,6 +59,14 @@ export default function ProjectDetail() {
   function handleTabChange(value) {
     sessionStorage.setItem(SESSION_KEY(id), value);
     setSearchParams({ tab: value }, { replace: true });
+  }
+
+  if (fl.loading) {
+    return (
+      <AppLayout pageHeader={{ title: "Loading...", icon: <Cpu size={18} /> }}>
+        <PageSkeleton layout="project" />
+      </AppLayout>
+    );
   }
 
   if (!fl.project) {
@@ -122,7 +120,7 @@ export default function ProjectDetail() {
     <AppLayout
       pageHeader={{
         title: fl.project.name,
-        subtitle: subtitleParts.join(" · "),
+        subtitle: subtitleParts.join(" \u00b7 "),
         icon: <Cpu size={18} />,
         badge: visibilityBadge,
       }}
@@ -134,92 +132,106 @@ export default function ProjectDetail() {
           {amLead && <TabsTrigger value="admin">Project Admin</TabsTrigger>}
         </TabsList>
 
-        {/* My Node */}
-        <TabsContent value="mynode" className="space-y-6">
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <StatCard label="Trust Score" value={formatPercent(trust * 100)} icon={Shield} color={getTrustColor(trust)} />
-            <StatCard label="Status" value={stats.myNode?.status || "—"} icon={Activity} />
-            <StatCard label="Staleness" value={`${stats.myNode?.staleness ?? 0}R`} icon={Clock} />
-            <StatCard label="Rounds" value={stats.roundsContributed} icon={Hash} />
-          </div>
-
-          <Card>
-            <CardContent className="space-y-3 p-4">
-              <p className="metric-label text-muted-foreground">Your Trust vs Cluster Average</p>
-              <div className="space-y-2">
-                <div className="flex items-center gap-3">
-                  <span className="w-16 text-xs text-muted-foreground">You</span>
-                  <Progress value={trust * 100} className="flex-1 h-2"
-                    indicatorClassName={trust >= 0.7 ? "bg-emerald-500" : trust >= 0.4 ? "bg-amber-500" : "bg-rose-500"} />
-                  <span className="mono-data w-14 text-right text-xs">{formatPercent(trust * 100)}</span>
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={defaultTab + viewMode}
+            variants={fadeIn}
+            initial="hidden"
+            animate="visible"
+            exit="hidden"
+          >
+            {/* My Node */}
+            {defaultTab === "mynode" && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                  <StatCard label="Trust Score" value={trust} icon={Shield} color={getTrustColor(trust)} />
+                  <StatCard label="Status" value={stats.myNode?.status || "\u2014"} icon={Activity} />
+                  <StatCard label="Staleness" value={`${stats.myNode?.staleness ?? 0}R`} icon={Clock} />
+                  <StatCard label="Rounds" value={stats.roundsContributed} icon={Hash} />
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className="w-16 text-xs text-muted-foreground">Avg</span>
-                  <Progress value={avgTrust * 100} className="flex-1 h-2" />
-                  <span className="mono-data w-14 text-right text-xs">{formatPercent(avgTrust * 100)}</span>
-                </div>
+
+                <Card>
+                  <CardContent className="space-y-3 p-4">
+                    <p className="metric-label text-muted-foreground">Your Trust vs Cluster Average</p>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-3">
+                        <span className="w-16 text-xs text-muted-foreground">You</span>
+                        <Progress value={trust * 100} className="flex-1 h-2"
+                          indicatorClassName={trust >= 0.7 ? "bg-emerald-500" : trust >= 0.4 ? "bg-amber-500" : "bg-rose-500"} />
+                        <span className="mono-data w-14 text-right text-xs"><AnimatedNumber value={trust * 100} suffix="%" /></span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="w-16 text-xs text-muted-foreground">Avg</span>
+                        <Progress value={avgTrust * 100} className="flex-1 h-2" />
+                        <span className="mono-data w-14 text-right text-xs"><AnimatedNumber value={avgTrust * 100} suffix="%" /></span>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {viewMode === "detailed" && (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      <StatCard label="Cos. Distance" value={stats.myNode?.cosineDistance ?? 0} icon={Gauge} />
+                      <StatCard label="Gradient Updates" value={stats.totalUpdates} icon={Layers} />
+                    </div>
+                    <Card>
+                      <CardHeader><CardTitle className="text-sm">Privacy</CardTitle></CardHeader>
+                      <CardContent><PrivacyGauge latestRound={fl.latestRound} viewMode="detailed" /></CardContent>
+                    </Card>
+                    <Card>
+                      <CardHeader><CardTitle className="text-sm">Convergence (read-only)</CardTitle></CardHeader>
+                      <CardContent className="h-64 min-h-[200px]">
+                        <ConvergenceChart rounds={fl.allRounds} viewMode={viewMode} />
+                      </CardContent>
+                    </Card>
+                  </>
+                )}
               </div>
-            </CardContent>
-          </Card>
+            )}
 
-          {viewMode === "detailed" && (
-            <>
-              <div className="grid grid-cols-2 gap-4">
-                <StatCard label="Cos. Distance" value={(stats.myNode?.cosineDistance ?? 0).toFixed(3)} icon={Gauge} />
-                <StatCard label="Gradient Updates" value={stats.totalUpdates} icon={Layers} />
+            {/* Server Metrics (read-only) */}
+            {defaultTab === "server" && (
+              <div className="space-y-6">
+                <Card>
+                  <CardHeader><CardTitle className="text-sm">Model Convergence</CardTitle></CardHeader>
+                  <CardContent className="h-72 min-h-[200px]">
+                    <ConvergenceChart rounds={fl.allRounds} viewMode={viewMode} />
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader><CardTitle className="text-sm">SABD Detection</CardTitle></CardHeader>
+                  <CardContent>
+                    <SABDPanel latestRound={fl.latestRound} allRounds={fl.allRounds} sabdAlpha={fl.project.config.sabdAlpha} viewMode={viewMode} nodes={fl.nodes} />
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader><CardTitle className="text-sm">Training Timeline</CardTitle></CardHeader>
+                  <CardContent className="h-64 min-h-[200px]">
+                    <GanttTimeline ganttBlocks={fl.ganttBlocks} aggTriggerTimes={fl.aggTriggerTimes} nodes={fl.nodes} viewMode={viewMode} />
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader><CardTitle className="text-sm">Privacy Budget</CardTitle></CardHeader>
+                  <CardContent><PrivacyGauge latestRound={fl.latestRound} viewMode={viewMode} /></CardContent>
+                </Card>
               </div>
-              <Card>
-                <CardHeader><CardTitle className="text-sm">Privacy</CardTitle></CardHeader>
-                <CardContent><PrivacyGauge latestRound={fl.latestRound} viewMode="detailed" /></CardContent>
-              </Card>
-              <Card>
-                <CardHeader><CardTitle className="text-sm">Convergence (read-only)</CardTitle></CardHeader>
-                <CardContent className="h-64 min-h-[200px]">
-                  <ConvergenceChart rounds={fl.allRounds} viewMode={viewMode} />
-                </CardContent>
-              </Card>
-            </>
-          )}
-        </TabsContent>
+            )}
 
-        {/* Server Metrics (read-only) */}
-        <TabsContent value="server" className="space-y-6">
-          <Card>
-            <CardHeader><CardTitle className="text-sm">Model Convergence</CardTitle></CardHeader>
-            <CardContent className="h-72 min-h-[200px]">
-              <ConvergenceChart rounds={fl.allRounds} viewMode={viewMode} />
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader><CardTitle className="text-sm">SABD Detection</CardTitle></CardHeader>
-            <CardContent>
-              <SABDPanel latestRound={fl.latestRound} allRounds={fl.allRounds} sabdAlpha={fl.project.config.sabdAlpha} viewMode={viewMode} nodes={fl.nodes} />
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader><CardTitle className="text-sm">Training Timeline</CardTitle></CardHeader>
-            <CardContent className="h-64 min-h-[200px]">
-              <GanttTimeline ganttBlocks={fl.ganttBlocks} aggTriggerTimes={fl.aggTriggerTimes} nodes={fl.nodes} viewMode={viewMode} />
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader><CardTitle className="text-sm">Privacy Budget</CardTitle></CardHeader>
-            <CardContent><PrivacyGauge latestRound={fl.latestRound} viewMode={viewMode} /></CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Project Admin (only visible to project leads) */}
-        {amLead && (
-          <TabsContent value="admin" className="space-y-6">
-            <ProjectAdminTab
-              fl={fl}
-              projectId={id}
-              currentUser={currentUser}
-              store={store}
-              viewMode={viewMode}
-            />
-          </TabsContent>
-        )}
+            {/* Project Admin */}
+            {defaultTab === "admin" && amLead && (
+              <div className="space-y-6">
+                <ProjectAdminTab
+                  fl={fl}
+                  projectId={id}
+                  currentUser={currentUser}
+                  store={store}
+                  viewMode={viewMode}
+                />
+              </div>
+            )}
+          </motion.div>
+        </AnimatePresence>
       </Tabs>
     </AppLayout>
   );
@@ -283,7 +295,6 @@ function ProjectAdminTab({ fl, projectId, currentUser, store, viewMode }) {
 
   return (
     <>
-      {/* Node management */}
       <Card>
         <CardHeader><CardTitle className="text-sm">Node Management</CardTitle></CardHeader>
         <CardContent>
@@ -297,10 +308,8 @@ function ProjectAdminTab({ fl, projectId, currentUser, store, viewMode }) {
         </CardContent>
       </Card>
 
-      {/* Control Panel */}
       <ControlPanel fl={fl} projectId={projectId} />
 
-      {/* Join Requests */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-sm">
@@ -333,7 +342,7 @@ function ProjectAdminTab({ fl, projectId, currentUser, store, viewMode }) {
                       <TableCell className="text-xs text-muted-foreground">
                         {formatDistanceToNow(new Date(req.requestedAt), { addSuffix: true })}
                       </TableCell>
-                      <TableCell className="max-w-[200px] truncate text-xs text-muted-foreground">{req.message || "—"}</TableCell>
+                      <TableCell className="max-w-[200px] truncate text-xs text-muted-foreground">{req.message || "\u2014"}</TableCell>
                       <TableCell>
                         <div className="flex gap-1">
                           <ConfirmDialog
@@ -362,7 +371,6 @@ function ProjectAdminTab({ fl, projectId, currentUser, store, viewMode }) {
         </CardContent>
       </Card>
 
-      {/* Member Management */}
       <Card>
         <CardHeader><CardTitle className="text-sm">Members</CardTitle></CardHeader>
         <CardContent>

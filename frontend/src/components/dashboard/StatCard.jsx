@@ -1,7 +1,9 @@
+import { useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { TrendingUp, TrendingDown } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import AnimatedNumber from "@/components/ui/AnimatedNumber";
 import {
   Tooltip,
   TooltipContent,
@@ -9,6 +11,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { fadeInUp, cardHover } from "@/lib/animations";
 
 const BORDER_VARIANTS = {
   default: "border-l-2 border-border",
@@ -49,18 +52,15 @@ export default function StatCard({
           ) : (
             <>
               <p className="metric-label text-muted-foreground">{label}</p>
-              <AnimatePresence mode="wait">
-                <motion.p
-                  key={String(value)}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -6 }}
-                  transition={{ duration: 0.2 }}
-                  className={cn("metric-value mt-0.5", color)}
-                >
-                  {value}
-                </motion.p>
-              </AnimatePresence>
+              <div className={cn("metric-value mt-0.5", color)}>
+                {typeof value === "number" ? (
+                  <AnimatedNumber value={value} decimals={label.includes("Trust") || label.includes("Dist") ? 3 : 0} />
+                ) : value.endsWith("%") && !isNaN(parseFloat(value)) ? (
+                  <AnimatedNumber value={parseFloat(value)} suffix="%" decimals={label.includes("Accuracy") ? 1 : 0} />
+                ) : (
+                  <span>{value}</span>
+                )}
+              </div>
               {(subtext || description) && (
                 <p className="mt-1 text-xs text-muted-foreground">
                   {subtext || description}
@@ -95,13 +95,18 @@ export default function StatCard({
   if (tooltipText) {
     return (
       <motion.div
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3 }}
+        variants={fadeInUp}
+        initial="hidden"
+        animate="visible"
+        whileHover="hover"
       >
         <TooltipProvider delayDuration={300}>
           <Tooltip>
-            <TooltipTrigger asChild>{content}</TooltipTrigger>
+            <TooltipTrigger asChild>
+              <motion.div variants={cardHover} initial="rest" animate="rest" whileHover="hover">
+                {content}
+              </motion.div>
+            </TooltipTrigger>
             <TooltipContent>
               <p>{tooltipText}</p>
             </TooltipContent>
@@ -113,11 +118,14 @@ export default function StatCard({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3 }}
+      variants={fadeInUp}
+      initial="hidden"
+      animate="visible"
+      whileHover="hover"
     >
-      {content}
+      <motion.div variants={cardHover} initial="rest" animate="rest" whileHover="hover">
+        {content}
+      </motion.div>
     </motion.div>
   );
 }

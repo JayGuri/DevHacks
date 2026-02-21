@@ -1,3 +1,4 @@
+import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate, Link } from "react-router-dom";
 import { useTheme } from "next-themes";
 import {
@@ -115,11 +116,20 @@ export default function TopNav({ breadcrumbs = [] }) {
           <PopoverTrigger asChild>
             <Button variant="ghost" size="icon" className="relative">
               <Bell size={16} />
-              {unreadCount > 0 && (
-                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white">
-                  {unreadCount > 9 ? "9+" : unreadCount}
-                </span>
-              )}
+              <AnimatePresence>
+                {unreadCount > 0 && (
+                  <motion.span
+                    key={unreadCount}
+                    initial={{ scale: 0.8, opacity: 0 }}
+                    animate={{ scale: [1, 1.4, 1], opacity: 1 }}
+                    exit={{ scale: 0.8, opacity: 0 }}
+                    transition={{ duration: 0.3 }}
+                    className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white"
+                  >
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </motion.span>
+                )}
+              </AnimatePresence>
             </Button>
           </PopoverTrigger>
           <PopoverContent align="end" className="w-80 p-0">

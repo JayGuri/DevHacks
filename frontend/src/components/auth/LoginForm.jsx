@@ -47,57 +47,67 @@ export default function LoginForm() {
   return (
     <motion.div
       initial={{ y: 24, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
+      animate={error ? { x: [-10, 10, -10, 10, 0], y: 0, opacity: 1 } : { y: 0, opacity: 1 }}
       transition={{ duration: 0.35, ease: "easeOut" }}
     >
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle className="text-display text-2xl">Sign In</CardTitle>
         </CardHeader>
-
+ 
         <form onSubmit={handleSubmit(onSubmit)}>
           <CardContent className="space-y-4">
             {error && (
-              <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                className="rounded-md bg-destructive/10 p-3 text-sm text-destructive"
+              >
                 {error}
-              </div>
+              </motion.div>
             )}
-
+ 
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                placeholder="lead@arfl.dev"
-                {...register("email", {
-                  required: "Email is required",
-                  pattern: {
-                    value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-                    message: "Enter a valid email",
-                  },
-                })}
-              />
+              <motion.div whileFocus={{ scale: 1.005 }}>
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="lead@arfl.dev"
+                  className="transition-all focus:ring-2 focus:ring-primary/20"
+                  {...register("email", {
+                    required: "Email is required",
+                    pattern: {
+                      value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+                      message: "Enter a valid email",
+                    },
+                  })}
+                />
+              </motion.div>
               {errors.email && (
                 <p className="text-xs text-destructive">
                   {errors.email.message}
                 </p>
               )}
             </div>
-
+ 
             <div className="space-y-2">
               <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                placeholder="••••••••"
-                {...register("password", {
-                  required: "Password is required",
-                  minLength: {
-                    value: 6,
-                    message: "Password must be at least 6 characters",
-                  },
-                })}
-              />
+              <motion.div whileFocus={{ scale: 1.005 }}>
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="••••••••"
+                  className="transition-all focus:ring-2 focus:ring-primary/20"
+                  {...register("password", {
+                    required: "Password is required",
+                    minLength: {
+                      value: 6,
+                      message: "Password must be at least 6 characters",
+                    },
+                  })}
+                />
+              </motion.div>
               {errors.password && (
                 <p className="text-xs text-destructive">
                   {errors.password.message}
@@ -105,7 +115,7 @@ export default function LoginForm() {
               )}
             </div>
           </CardContent>
-
+ 
           <CardFooter className="flex flex-col gap-3">
             <Button type="submit" className="w-full" disabled={submitting}>
               {submitting ? (

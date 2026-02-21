@@ -12,6 +12,8 @@ import {
 } from "recharts";
 import { formatPercent } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
+import AnimatedNumber from "@/components/ui/AnimatedNumber";
+import { fadeInUp } from "@/lib/animations";
 
 function fprColor(fpr) {
   if (fpr > 0.3) return "text-rose-500";
@@ -19,12 +21,14 @@ function fprColor(fpr) {
   return "text-emerald-500";
 }
 
-function MetricCard({ label, value, color, description }) {
+function MetricCard({ label, value, color, description, isPercent = true }) {
   return (
     <Card className="flex-1">
       <CardContent className="flex flex-col items-center gap-1 p-4">
         <span className="metric-label text-muted-foreground">{label}</span>
-        <span className={`metric-value ${color || ""}`}>{value}</span>
+        <span className={`metric-value ${color || ""}`}>
+          <AnimatedNumber value={value * (isPercent ? 100 : 1)} suffix={isPercent ? "%" : ""} decimals={isPercent ? 1 : 2} />
+        </span>
         {description && (
           <span className="text-center text-xs text-muted-foreground">
             {description}
@@ -75,28 +79,29 @@ export default function SABDPanel({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3 }}
+      variants={fadeInUp}
+      initial="hidden"
+      animate="visible"
       className="space-y-4"
     >
       {/* Metric cards */}
       <div className="flex flex-col gap-3 sm:flex-row">
         <MetricCard
           label="False Positive Rate"
-          value={formatPercent(fpr * 100)}
+          value={fpr}
           color={fprColor(fpr)}
           description="Lower is better"
         />
         <MetricCard
           label="Recall"
-          value={formatPercent(recall * 100)}
+          value={recall}
           color="text-emerald-500"
           description="Byzantine detection rate"
         />
         <MetricCard
           label="Alpha (α)"
-          value={alpha.toFixed(2)}
+          value={alpha}
+          isPercent={false}
           color="text-primary"
           description="Sensitivity threshold"
         />

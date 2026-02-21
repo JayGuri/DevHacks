@@ -33,26 +33,38 @@ function getStatusDotColor(project, store) {
 }
 
 // ── Simple sidebar nav link ─────────────────────────────────────────
-function SidebarLink({ icon: Icon, label, to, badge, end = false }) {
+function SidebarLink({ icon: Icon, label, to, badge, end = false, onClick }) {
   return (
     <NavLink
       to={to}
       end={end}
+      onClick={onClick}
       className={({ isActive }) =>
         cn(
-          "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors",
+          "relative flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors",
           isActive
-            ? "border-l-2 border-primary bg-primary/10 font-medium text-primary"
+            ? "bg-primary/10 font-medium text-primary"
             : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
         )
       }
     >
-      <Icon size={15} className="shrink-0" />
-      <span className="flex-1 truncate">{label}</span>
-      {badge != null && badge > 0 && (
-        <span className="flex h-4.5 min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">
-          {badge > 9 ? "9+" : badge}
-        </span>
+      {({ isActive }) => (
+        <>
+          {isActive && (
+            <motion.div
+              layoutId="sidebar-active-indicator"
+              className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-primary"
+              transition={{ type: "spring", stiffness: 300, damping: 30 }}
+            />
+          )}
+          <Icon size={15} className="shrink-0" />
+          <span className="flex-1 truncate">{label}</span>
+          {badge != null && badge > 0 && (
+            <span className="flex h-4.5 min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">
+              {badge > 9 ? "9+" : badge}
+            </span>
+          )}
+        </>
       )}
     </NavLink>
   );
@@ -94,22 +106,33 @@ function ProjectNavItem({ project, currentUser, store, onNavigate }) {
         onClick={onNavigate}
         className={({ isActive }) =>
           cn(
-            "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors",
+            "relative flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors",
             isActive || isOnThisProject
               ? "bg-primary/10 font-medium text-primary"
               : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           )
         }
       >
-        <span className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)} />
-        <span className="flex-1 truncate text-[13px]">{project.name}</span>
-        <ChevronRight
-          size={13}
-          className={cn(
-            "shrink-0 text-muted-foreground/50 transition-transform",
-            isOnThisProject && "rotate-90"
-          )}
-        />
+        {({ isActive }) => (
+          <>
+            {(isActive || isOnThisProject) && (
+              <motion.div
+                layoutId="sidebar-active-indicator"
+                className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-primary"
+                transition={{ type: "spring", stiffness: 300, damping: 30 }}
+              />
+            )}
+            <span className={cn("h-2 w-2 shrink-0 rounded-full", dotColor)} />
+            <span className="flex-1 truncate text-[13px]">{project.name}</span>
+            <ChevronRight
+              size={13}
+              className={cn(
+                "shrink-0 text-muted-foreground/50 transition-transform",
+                isOnThisProject && "rotate-90"
+              )}
+            />
+          </>
+        )}
       </NavLink>
 
       <AnimatePresence initial={false}>

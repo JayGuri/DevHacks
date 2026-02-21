@@ -1,5 +1,7 @@
 import { motion } from "framer-motion";
 import { formatEpsilon } from "@/lib/utils";
+import AnimatedNumber from "@/components/ui/AnimatedNumber";
+import { fadeInUp } from "@/lib/animations";
 import {
   Tooltip,
   TooltipContent,
@@ -92,9 +94,9 @@ export default function PrivacyGauge({ latestRound, viewMode }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3 }}
+      variants={fadeInUp}
+      initial="hidden"
+      animate="visible"
     >
       {viewMode === "simple" ? (
         <TooltipProvider delayDuration={300}>
@@ -102,7 +104,7 @@ export default function PrivacyGauge({ latestRound, viewMode }) {
             <TooltipTrigger asChild>
               <div className="flex cursor-default flex-col items-center gap-1">
                 <span className={`metric-value ${color}`}>
-                  {formatEpsilon(epsilon)}
+                  <AnimatedNumber value={epsilon} decimals={1} prefix="ε " />
                 </span>
                 <span className="metric-label text-muted-foreground">
                   Privacy Budget Consumed
@@ -121,7 +123,7 @@ export default function PrivacyGauge({ latestRound, viewMode }) {
         <div className="space-y-4">
           <div className="flex flex-col items-center gap-1">
             <span className={`metric-value ${color}`}>
-              {formatEpsilon(epsilon)}
+               <AnimatedNumber value={epsilon} decimals={1} prefix="ε " />
             </span>
             <span className="metric-label text-muted-foreground">
               Privacy Budget Consumed

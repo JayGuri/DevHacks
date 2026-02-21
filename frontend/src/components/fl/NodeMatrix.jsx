@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { motion } from "framer-motion";
+import { useState, useRef, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { cn, getTrustBg, formatPercent } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import AnimatedNumber from "@/components/ui/AnimatedNumber";
 import {
   Table,
   TableBody,
@@ -125,85 +126,135 @@ export default function NodeMatrix({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((node, index) => (
-                  <motion.tr
-                    key={node.nodeId}
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.2, delay: index * 0.04 }}
-                    className={cn(
-                      "border-b border-border",
-                      node.isByzantine && !node.isBlocked && "bg-rose-500/5",
-                      node.isBlocked && "opacity-50"
-                    )}
-                  >
-                    <TableCell className="mono-data font-medium">
-                      {node.displayId}
-                    </TableCell>
-                    <TableCell>{typeLabel(node)}</TableCell>
-                    <TableCell>
-                      <div className="w-24 space-y-1">
-                        <Progress
-                          value={node.trust * 100}
-                          className="h-1.5"
-                          indicatorClassName={trustIndicatorClass(node.trust)}
-                        />
-                        <span className="mono-data text-xs text-muted-foreground">
-                          {formatPercent(node.trust * 100)}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell
-                      className={cn(
-                        "mono-data text-sm",
-                        node.cosineDistance > 0.45
-                          ? "text-rose-500"
-                          : "text-muted-foreground"
-                      )}
-                    >
-                      {node.cosineDistance.toFixed(3)}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{node.staleness}R</Badge>
-                    </TableCell>
-                    <TableCell>{statusBadge(node.status)}</TableCell>
-                    {isAdmin && (
-                      <TableCell>
-                        {node.isBlocked ? (
-                          <ConfirmDialog
-                            trigger={
-                              <Button size="sm" variant="ghost">
-                                Unblock
-                              </Button>
-                            }
-                            title="Unblock Node"
-                            description={`Restore ${node.displayId} to active participation?`}
-                            actionLabel="Unblock"
-                            onConfirm={() => onUnblock(node.nodeId)}
-                          />
-                        ) : (
-                          <ConfirmDialog
-                            trigger={
-                              <Button size="sm" variant="outline">
-                                Block
-                              </Button>
-                            }
-                            title="Block Node"
-                            description={`Remove ${node.displayId} from training? This node will stop contributing updates.`}
-                            actionLabel="Block"
-                            variant="destructive"
-                            onConfirm={() => onBlock(node.nodeId)}
-                          />
-                        )}
-                      </TableCell>
-                    )}
-                  </motion.tr>
-                ))}
+                <AnimatePresence initial={false} mode="popLayout">
+                  {filtered.map((node, index) => (
+                    <NodeRow
+                      key={node.nodeId}
+                      node={node}
+                      index={index}
+                      isAdmin={isAdmin}
+                      onBlock={onBlock}
+                      onUnblock={onUnblock}
+                    />
+                  ))}
+                </AnimatePresence>
               </TableBody>
             </Table>
           </div>
         </>
       )}
     </motion.div>
+  );
+}
+
+function NodeRow({ node, index, isAdmin, onBlock, onUnblock }) {
+  const prevNodeRef = useRef(node);
+  const [flashClass, setFlashClass] = useState("");
+  const [statusPulse, setStatusPulse] = useState("");
+
+  useEffect(() => {
+    const prev = prevNodeRef.current;
+    if (prev.trust !== node.trust) {
+      setFlashClass("animate-row-flash");
+      const timer = setTimeout(() => setFlashClass(""), 500);
+      return () => clearTimeout(timer);
+    }
+    if (prev.status !== node.status && node.status === "BYZANTINE") {
+      setStatusPulse("animate-rose-flash");
+      const timer = setTimeout(() => setStatusPulse(""), 1600);
+      return () => clearTimeout(timer);
+    }
+    prevNodeRef.current = node;
+  }, [node]);
+
+  return (
+    <motion.tr
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.95, x: -20 }}
+      transition={{ duration: 0.2 }}
+      className={cn(
+        "border-b border-border transition-colors",
+        node.isByzantine && !node.isBlocked && "bg-rose-500/5",
+        node.isBlocked && "opacity-50",
+        flashClass,
+        statusPulse
+      )}
+    >
+      <TableCell className="mono-data font-medium">
+        {node.displayId}
+      </TableCell>
+      <TableCell>{typeLabel(node)}</TableCell>
+      <TableCell>
+        <div className="w-24 space-y-1">
+          <Progress
+            value={node.trust * 100}
+            className="h-1.5"
+            indicatorClassName={trustIndicatorClass(node.trust)}
+          />
+          <div className="mono-data text-xs text-muted-foreground">
+            <AnimatedNumber value={node.trust * 100} decimals={1} suffix="%" />
+          </div>
+        </div>
+      </TableCell>
+      <TableCell
+        className={cn(
+          "mono-data text-sm",
+          node.cosineDistance > 0.45
+            ? "text-rose-500"
+            : "text-muted-foreground"
+        )}
+      >
+        <AnimatedNumber value={node.cosineDistance} decimals={3} />
+      </TableCell>
+      <TableCell>
+        <Badge variant="outline">{node.staleness}R</Badge>
+      </TableCell>
+      <TableCell>
+        <motion.div
+          animate={statusPulse ? { scale: [1, 1.2, 1] } : {}}
+          transition={{ duration: 0.4 }}
+        >
+          {statusBadge(node.status)}
+        </motion.div>
+      </TableCell>
+      {isAdmin && (
+        <TableCell>
+          {node.isBlocked ? (
+            <ConfirmDialog
+              trigger={
+                <Button size="sm" variant="ghost">
+                  Unblock
+                </Button>
+              }
+              title="Unblock Node"
+              description={`Restore ${node.displayId} to active participation?`}
+              actionLabel="Unblock"
+              onConfirm={() => onUnblock(node.nodeId)}
+            />
+          ) : (
+            <ConfirmDialog
+              trigger={
+                <div className="relative">
+                   {node.isBlocked && <div className="absolute inset-0 bg-rose-500/20 animate-pulse rounded-md" />}
+                   <Button size="sm" variant="outline">
+                    Block
+                  </Button>
+                </div>
+              }
+              title="Block Node"
+              description={`Remove ${node.displayId} from training? This node will stop contributing updates.`}
+              actionLabel="Block"
+              variant="destructive"
+              onConfirm={() => {
+                // Brief flash before blocking is handled by exit animation
+                onBlock(node.nodeId);
+              }}
+            />
+          )}
+        </TableCell>
+      )}
+    </motion.tr>
   );
 }

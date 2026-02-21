@@ -27,6 +27,7 @@ export default function SignupForm() {
   const { signup } = useAuth();
   const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
 
   const {
     register,
@@ -40,11 +41,13 @@ export default function SignupForm() {
 
   async function onSubmit(data) {
     setSubmitting(true);
+    setError(null);
     try {
       await signup(data.name, data.email, data.password, data.role);
       toast.success("Account created — sign in with demo credentials");
       navigate("/login");
     } catch {
+      setError("Something went wrong");
       toast.error("Something went wrong");
     } finally {
       setSubmitting(false);
@@ -54,7 +57,7 @@ export default function SignupForm() {
   return (
     <motion.div
       initial={{ y: 24, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
+      animate={error ? { x: [-10, 10, -10, 10, 0], y: 0, opacity: 1 } : { y: 0, opacity: 1 }}
       transition={{ duration: 0.35, ease: "easeOut" }}
     >
       <Card className="w-full max-w-md">
@@ -68,11 +71,14 @@ export default function SignupForm() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="name">Full Name</Label>
-              <Input
-                id="name"
-                placeholder="Alex Morgan"
-                {...register("name", { required: "Name is required" })}
-              />
+              <motion.div whileFocus={{ scale: 1.005 }}>
+                <Input
+                  id="name"
+                  placeholder="Alex Morgan"
+                  className="transition-all focus:ring-2 focus:ring-primary/20"
+                  {...register("name", { required: "Name is required" })}
+                />
+              </motion.div>
               {errors.name && (
                 <p className="text-xs text-destructive">
                   {errors.name.message}
@@ -82,18 +88,21 @@ export default function SignupForm() {
 
             <div className="space-y-2">
               <Label htmlFor="signup-email">Email</Label>
-              <Input
-                id="signup-email"
-                type="email"
-                placeholder="you@example.com"
-                {...register("email", {
-                  required: "Email is required",
-                  pattern: {
-                    value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-                    message: "Enter a valid email",
-                  },
-                })}
-              />
+              <motion.div whileFocus={{ scale: 1.005 }}>
+                <Input
+                  id="signup-email"
+                  type="email"
+                  placeholder="you@example.com"
+                  className="transition-all focus:ring-2 focus:ring-primary/20"
+                  {...register("email", {
+                    required: "Email is required",
+                    pattern: {
+                      value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+                      message: "Enter a valid email",
+                    },
+                  })}
+                />
+              </motion.div>
               {errors.email && (
                 <p className="text-xs text-destructive">
                   {errors.email.message}
@@ -103,18 +112,21 @@ export default function SignupForm() {
 
             <div className="space-y-2">
               <Label htmlFor="signup-password">Password</Label>
-              <Input
-                id="signup-password"
-                type="password"
-                placeholder="••••••••"
-                {...register("password", {
-                  required: "Password is required",
-                  minLength: {
-                    value: 6,
-                    message: "Password must be at least 6 characters",
-                  },
-                })}
-              />
+              <motion.div whileFocus={{ scale: 1.005 }}>
+                <Input
+                  id="signup-password"
+                  type="password"
+                  placeholder="••••••••"
+                  className="transition-all focus:ring-2 focus:ring-primary/20"
+                  {...register("password", {
+                    required: "Password is required",
+                    minLength: {
+                      value: 6,
+                      message: "Password must be at least 6 characters",
+                    },
+                  })}
+                />
+              </motion.div>
               {errors.password && (
                 <p className="text-xs text-destructive">
                   {errors.password.message}
@@ -124,16 +136,19 @@ export default function SignupForm() {
 
             <div className="space-y-2">
               <Label htmlFor="confirm">Confirm Password</Label>
-              <Input
-                id="confirm"
-                type="password"
-                placeholder="••••••••"
-                {...register("confirmPassword", {
-                  required: "Please confirm your password",
-                  validate: (val) =>
-                    val === password || "Passwords do not match",
-                })}
-              />
+              <motion.div whileFocus={{ scale: 1.005 }}>
+                <Input
+                  id="confirm"
+                  type="password"
+                  placeholder="••••••••"
+                  className="transition-all focus:ring-2 focus:ring-primary/20"
+                  {...register("confirmPassword", {
+                    required: "Please confirm your password",
+                    validate: (val) =>
+                      val === password || "Passwords do not match",
+                  })}
+                />
+              </motion.div>
               {errors.confirmPassword && (
                 <p className="text-xs text-destructive">
                   {errors.confirmPassword.message}
@@ -147,7 +162,7 @@ export default function SignupForm() {
                 defaultValue="CONTRIBUTOR"
                 onValueChange={(val) => setValue("role", val)}
               >
-                <SelectTrigger>
+                <SelectTrigger className="transition-all focus:ring-2 focus:ring-primary/20">
                   <SelectValue placeholder="Select role" />
                 </SelectTrigger>
                 <SelectContent>
