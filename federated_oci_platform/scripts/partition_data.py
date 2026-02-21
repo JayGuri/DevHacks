@@ -212,17 +212,18 @@ def upload_partitions_to_mongo(
     db_name: str = "fedbuff_db",
     alpha: float = 0.5,
 ) -> None:
-    """Upload all partitions to MongoDB."""
+    """Upload all partitions to MongoDB using GridFS (bypasses 16MB doc limit)."""
     from pymongo.mongo_client import MongoClient
     from pymongo.server_api import ServerApi
     from pymongo.errors import ServerSelectionTimeoutError
-    import bson
+    import gridfs
 
     # Configure client for MongoDB Atlas with ServerApi
     client = MongoClient(mongo_uri, server_api=ServerApi('1'))
 
     try:
         client.admin.command("ping")
+        logger.info("Connected to MongoDB Atlas successfully.")
     except ServerSelectionTimeoutError as exc:
         client.close()
         raise RuntimeError(
@@ -235,56 +236,43 @@ def upload_partitions_to_mongo(
         ) from exc
 
     db = client[db_name]
+    fs = gridfs.GridFS(db)
 
-    # Drop existing partitions — guarded by --force flag
-    existing_count = db.partitions.count_documents({})
-    if existing_count > 0:
-        if not getattr(upload_partitions_to_mongo, '_force', False):
-            logger.warning(
-                "Found %d existing partition documents in MongoDB. "
-                "Use --force to overwrite without prompting.",
-                existing_count,
-            )
-            confirm = input(
-                f"  Drop {existing_count} existing partitions? [y/N]: "
-            ).strip().lower()
-            if confirm != 'y':
-                logger.info("Aborted. No partitions were modified.")
-                client.close()
-                return
-        logger.info(
-            "Dropping %d existing partition documents from MongoDB...",
-            existing_count,
-        )
-        db.partitions.drop()
+    # Drop existing GridFS files for partitions
+    existing_files = list(db.fs.files.find({"metadata.type": "partition"}))
+    if existing_files:
+        logger.info("Dropping %d existing GridFS partition files...", len(existing_files))
+        for f in existing_files:
+            fs.delete(f["_id"])
 
-    logger.info("Uploading %d partitions to MongoDB (%s)...", len(partitions), mongo_uri)
+    logger.info("Uploading %d partitions via GridFS to MongoDB...", len(partitions))
 
     for p_idx, partition in enumerate(partitions):
         serialized_data = serialize_partition(partition)
         partition_stats = stats[p_idx] if p_idx < len(stats) else {}
 
-        doc = {
-            "partition_id": p_idx,
-            "dataset": "mnist",
-            "alpha": alpha,
-            "num_samples": int(len(partition["labels"])),
-            "created_at": datetime.now(timezone.utc),
-            "stats": partition_stats,
-            "data": bson.Binary(serialized_data),
-        }
-
-        db.partitions.insert_one(doc)
-        size_mb = len(serialized_data) / (1024 * 1024)
-        logger.info(
-            "Uploaded partition %d to MongoDB: %d samples, %.2f MB",
-            p_idx, len(partition["labels"]), size_mb,
+        # Store as a GridFS file (auto-chunked into 255KB pieces)
+        file_id = fs.put(
+            serialized_data,
+            filename=f"partition_{p_idx}.pt",
+            metadata={
+                "type": "partition",
+                "partition_id": p_idx,
+                "dataset": "mnist",
+                "alpha": alpha,
+                "num_samples": int(len(partition["labels"])),
+                "created_at": datetime.now(timezone.utc),
+                "stats": partition_stats,
+            },
         )
 
-    # Create index on partition_id for fast lookups
-    db.partitions.create_index("partition_id", unique=True)
+        size_mb = len(serialized_data) / (1024 * 1024)
+        logger.info(
+            "Uploaded partition %d via GridFS: %d samples, %.2f MB (file_id=%s)",
+            p_idx, len(partition["labels"]), size_mb, file_id,
+        )
 
-    # Store metadata
+    # Store metadata in a regular collection (small doc, no size issue)
     db.partition_meta.drop()
     db.partition_meta.insert_one({
         "dataset": "mnist",
@@ -296,7 +284,7 @@ def upload_partitions_to_mongo(
     })
 
     logger.info(
-        "MongoDB upload complete: %d partitions in '%s.partitions'",
+        "MongoDB upload complete: %d partitions in '%s' (GridFS)",
         len(partitions), db_name,
     )
     client.close()

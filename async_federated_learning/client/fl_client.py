@@ -26,7 +26,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.cnn import get_model, VOCAB_SHAKESPEARE
 from privacy.dp import PrivacyEngine
 from attacks.byzantine import MaliciousTrainer
-from data.shakespeare_loader import ShakespearePartitioner
 
 logger = logging.getLogger("fedbuff.client")
 
@@ -556,6 +555,24 @@ async def main():
     server_url = os.environ.get("SERVER_URL", "ws://localhost:8765/ws/fl")
     auth_token = os.environ.get("AUTH_TOKEN", "")
     dataset = os.environ.get("DATASET", "femnist")
+    if not auth_token:
+        import urllib.request, json
+        rest_url = server_url.replace("ws://", "http://").replace("/ws/fl", "/nodes/register")
+        data = json.dumps({
+            "role": client_role,
+            "display_name": display_name,
+            "participant": participant,
+            "task": dataset
+        }).encode("utf-8")
+        req = urllib.request.Request(rest_url, data=data, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as resp:
+                resp_data = json.loads(resp.read().decode("utf-8"))
+                auth_token = resp_data.get("token", "")
+                if client_id == "unknown-client":
+                    client_id = resp_data.get("node_id", client_id)
+        except Exception as e:
+            print(f"Auto-registration failed: {e}")
     data_partition = int(os.environ.get("NODE_INDEX", os.environ.get("DATA_PARTITION", "0")))
     total_nodes = int(os.environ.get("TOTAL_NODES", "10"))
     local_epochs = int(os.environ.get("LOCAL_EPOCHS", "5"))
@@ -570,6 +587,7 @@ async def main():
     if args.demo_speed:
         local_epochs = 1
         heartbeat_delay = (0.0, 0.0)
+        dp_noise_multiplier = 0.0  # Disable DP noise for demo as it causes NaN gradients on 1 epoch
     else:
         heartbeat_delay = (0.5, 3.0)
 
@@ -586,8 +604,20 @@ async def main():
     )
 
     # Step 1: Load data
-    leaf_loader = LEAFLoader(dataset, node_index=data_partition, total_nodes=total_nodes, batch_size=32)
-    data_loader = leaf_loader.get_dataloader()
+    mongo_uri = os.environ.get("MONGO_URI", "")
+    if mongo_uri:
+        from client.mongo_loader import MongoPartitionLoader
+        loader = MongoPartitionLoader(
+            mongo_uri=mongo_uri,
+            partition_id=data_partition,
+            batch_size=32,
+        )
+        data_loader = loader.get_dataloader()
+        logger.info("Data loaded via MongoPartitionLoader: %s", loader)
+    else:
+        leaf_loader = LEAFLoader(dataset, node_index=data_partition, total_nodes=total_nodes, batch_size=32)
+        data_loader = leaf_loader.get_dataloader()
+        logger.info("Data loaded via LEAFLoader (node_index=%d)", data_partition)
 
     # Step 2: Create model
     model = get_model(dataset)
@@ -718,7 +748,7 @@ async def main():
     except KeyboardInterrupt:
         logger.info("Client shutting down (keyboard interrupt)")
     except Exception as e:
-        logger.error("Client error: %s", e)
+        logger.exception("Client error: %s", e)
     finally:
         receive_task.cancel()
         try:

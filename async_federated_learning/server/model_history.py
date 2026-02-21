@@ -169,7 +169,12 @@ class ModelHistory:
             logger.warning("ModelHistory.update: unknown task=%s", task)
             return
 
-        self.models[task]["weights"] = {k: v.copy() for k, v in new_weights.items()}
+        # new_weights is the aggregated weight_diff. We must add it to the current global model.
+        old_weights = self.models[task]["weights"]
+        self.models[task]["weights"] = {
+            k: old_weights[k] + new_weights[k]
+            for k in old_weights
+        }
         self.models[task]["round"] += 1
         self.models[task]["version"] = self._compute_version(new_weights)
         self.models[task]["timestamp"] = datetime.now(timezone.utc).isoformat()

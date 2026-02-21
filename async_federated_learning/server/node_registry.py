@@ -90,7 +90,7 @@ class NodeRegistry:
             "task": task,
             "node_index": node_index,
             "total_nodes": self.max_nodes_per_task,
-            "created_at": now.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         if attack_type:
             node_info["attack_type"] = attack_type

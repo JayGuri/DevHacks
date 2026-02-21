@@ -138,7 +138,10 @@ class PrivacyEngine:
         result = self._dp.privatize(weight_diff)
 
         # Privacy accounting (simplified moments accountant)
-        epsilon_step = 2.0 * math.log(1.0 / self.delta) / (self.noise_multiplier ** 2)
+        if self.noise_multiplier > 0.0:
+            epsilon_step = 2.0 * math.log(1.0 / self.delta) / (self.noise_multiplier ** 2)
+        else:
+            epsilon_step = float("inf")
         self.epsilon_spent += epsilon_step
         self._step_count += 1
 

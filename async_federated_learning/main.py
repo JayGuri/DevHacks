@@ -1,6 +1,12 @@
 # main.py — FastAPI entrypoint: WebSocket, REST, SSE, startup
 import os
 import sys
+from dotenv import load_dotenv
+
+env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+if os.path.exists(env_path):
+    load_dotenv(env_path, override=True)
+
 import json
 import asyncio
 import logging
@@ -18,7 +24,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from config import settings
 from models.cnn import get_model, evaluate_model
 from models.lstm import evaluate_text_model
-from data.shakespeare_loader import ShakespearePartitioner
+# from data.shakespeare_loader import ShakespearePartitioner  # Not needed for MNIST MongoDB test
 from server.model_history import ModelHistory
 from server.fl_server import (
     init_jwt,
@@ -509,4 +515,5 @@ if __name__ == "__main__":
         log_level=settings.LOG_LEVEL.lower(),
         ws_ping_interval=20,
         ws_ping_timeout=20,
+        ws_max_size=104857600,  # 100MB max message size
     )
