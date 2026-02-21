@@ -1,57 +1,93 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { toast } from "sonner";
 import { Search } from "lucide-react";
 import { useStore } from "@/lib/store";
-import { MOCK_USERS, MOCK_PROJECTS } from "@/lib/mockData";
+import { MOCK_USERS } from "@/lib/mockData";
+import { USE_MOCK } from "@/lib/config";
+import { apiListUsers, apiUpdateUserRole, apiListProjects } from "@/lib/api";
+import { getAllProjects } from "@/lib/projectUtils";
 import AppLayout from "@/components/layout/AppLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from "@/components/ui/table";
 
 export default function AdminUsers() {
-  const viewMode = useStore((s) => s.viewMode);
-  const nodesByProject = useStore((s) => s.nodesByProject);
-  const [users, setUsers] = useState(MOCK_USERS);
+  const store = useStore();
+  const viewMode = store.viewMode;
+  const nodesByProject = store.nodesByProject;
+  const [users, setUsers] = useState([]);
   const [search, setSearch] = useState("");
+
+  // Fetch users and projects on mount
+  useEffect(() => {
+    if (!USE_MOCK) {
+      apiListUsers()
+        .then((data) => setUsers(data))
+        .catch((err) => {
+          console.error("Failed to fetch users:", err);
+          setUsers([]);
+        });
+      apiListProjects()
+        .then((data) => store.setProjects(data))
+        .catch(() => {});
+    } else {
+      setUsers(MOCK_USERS);
+    }
+  }, []);
 
   const filtered = useMemo(
     () =>
       users.filter(
         (u) =>
           u.name.toLowerCase().includes(search.toLowerCase()) ||
-          u.email.toLowerCase().includes(search.toLowerCase())
+          u.email.toLowerCase().includes(search.toLowerCase()),
       ),
-    [users, search]
+    [users, search],
   );
 
+  const allProjectsList = getAllProjects(store);
+
   function projectCount(userId) {
-    return MOCK_PROJECTS.filter((p) =>
-      p.members.some((m) => m.userId === userId)
+    return allProjectsList.filter((p) =>
+      p.members?.some((m) => m.userId === userId),
     ).length;
   }
 
   function userAvgTrust(userId) {
-    let sum = 0, count = 0;
-    MOCK_PROJECTS.forEach((p) => {
-      const member = p.members.find((m) => m.userId === userId);
+    let sum = 0,
+      count = 0;
+    allProjectsList.forEach((p) => {
+      const member = p.members?.find((m) => m.userId === userId);
       if (!member) return;
       const nodes = nodesByProject[p.id] || [];
       const node = nodes.find((n) => n.displayId === member.nodeId);
-      if (node) { sum += node.trust; count++; }
+      if (node) {
+        sum += node.trust;
+        count++;
+      }
     });
-    return count > 0 ? (sum / count * 100).toFixed(1) + "%" : "—";
+    return count > 0 ? ((sum / count) * 100).toFixed(1) + "%" : "—";
   }
 
   function userTotalRounds(userId) {
     let total = 0;
-    MOCK_PROJECTS.forEach((p) => {
-      const member = p.members.find((m) => m.userId === userId);
+    allProjectsList.forEach((p) => {
+      const member = p.members?.find((m) => m.userId === userId);
       if (!member) return;
       const nodes = nodesByProject[p.id] || [];
       const node = nodes.find((n) => n.displayId === member.nodeId);
@@ -60,9 +96,17 @@ export default function AdminUsers() {
     return total;
   }
 
-  function handleRoleChange(userId, newRole) {
+  async function handleRoleChange(userId, newRole) {
+    if (!USE_MOCK) {
+      try {
+        await apiUpdateUserRole(userId, newRole);
+      } catch (err) {
+        toast.error(err.message || "Failed to update role");
+        return;
+      }
+    }
     setUsers((prev) =>
-      prev.map((u) => (u.id === userId ? { ...u, role: newRole } : u))
+      prev.map((u) => (u.id === userId ? { ...u, role: newRole } : u)),
     );
     toast.success("Role updated");
   }
@@ -119,10 +163,14 @@ export default function AdminUsers() {
                   <Badge variant="outline">{projectCount(u.id)}</Badge>
                 </TableCell>
                 {viewMode === "detailed" && (
-                  <TableCell className="mono-data text-xs">{userAvgTrust(u.id)}</TableCell>
+                  <TableCell className="mono-data text-xs">
+                    {userAvgTrust(u.id)}
+                  </TableCell>
                 )}
                 {viewMode === "detailed" && (
-                  <TableCell className="mono-data text-xs">{userTotalRounds(u.id)}</TableCell>
+                  <TableCell className="mono-data text-xs">
+                    {userTotalRounds(u.id)}
+                  </TableCell>
                 )}
                 <TableCell className="text-xs text-muted-foreground">
                   {u.createdAt}

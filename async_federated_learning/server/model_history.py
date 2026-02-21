@@ -1,126 +1,64 @@
+# server/model_history.py — Rolling buffer of versioned model snapshots + legacy ModelHistory
 """
 server/model_history.py
 =======================
-Rolling buffer of versioned global model snapshots for the async FL server.
-
 Contains:
-- ModelHistoryBuffer: fixed-capacity dict-backed buffer keyed by integer
-  version_id.  Used by SABD to compute the per-parameter drift
-  Δ_{s→t} = θ_t − θ_s between a client's base version and the current
-  global model, enabling staleness-aware Byzantine scoring.
+- ModelHistoryBuffer: SABD-compatible rolling snapshot buffer keyed by version_id.
+- ModelHistory: akshat's legacy model history for WebSocket server (serialisation, rounds).
+
+ModelHistoryBuffer is used by SABD to compute per-parameter drift between versions.
+ModelHistory is used by the FastAPI WebSocket server for round tracking and model serving.
 """
 
 import logging
+import time
+import hashlib
+import base64
 from collections import deque
+from datetime import datetime, timezone
 
 import numpy as np
+import msgpack
 
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# SABD-compatible rolling buffer (from ayush)
+# ---------------------------------------------------------------------------
+
 class ModelHistoryBuffer:
-    """
-    Rolling buffer of versioned global model snapshots.
-
-    Role in pipeline
-    ----------------
-    The FLServer calls ``record()`` after every aggregation round, storing a
-    copy of the new global model weights.  When a client update arrives with
-    a ``base_version`` tag, SABD calls ``get_drift(base_version, current_weights)``
-    to retrieve the parameter drift Δ_{s→t} = θ_t − θ_s.  This drift
-    measures how far the global model has moved since the client last
-    synchronised and is used to discount stale or Byzantine updates.
-
-    Design
-    ------
-    Capacity is bounded by ``max_size``.  Once full, the *oldest* snapshot is
-    evicted before a new one is inserted (FIFO via ``collections.deque``).
-    Weights are stored as deep copies so subsequent in-place modifications to
-    the caller's tensors do not corrupt the history.
+    """Rolling buffer of versioned global model snapshots for SABD drift computation.
 
     Parameters
     ----------
     max_size : int
-        Maximum number of model snapshots to retain.  Corresponds to
-        ``Config.model_history_size`` (default 15).
+        Maximum number of model snapshots to retain (default 15).
     """
 
     def __init__(self, max_size: int) -> None:
-        # version_id (int) → weights snapshot (dict[str, np.ndarray])
         self._history: dict = {}
-        # Ordered insertion record; maxlen enforces capacity at append time
         self._order: deque = deque(maxlen=max_size)
         self.max_size = max_size
-        self.logger = logging.getLogger(__name__)
-        self.logger.debug("ModelHistoryBuffer initialised (max_size=%d).", max_size)
-
-    # ------------------------------------------------------------------
-    # Core API
-    # ------------------------------------------------------------------
+        logger.debug("ModelHistoryBuffer initialised (max_size=%d).", max_size)
 
     def record(self, version_id: int, weights_dict: dict) -> None:
-        """
-        Snapshot and store the global model at ``version_id``.
-
-        If the buffer is already at capacity (``len(self) == max_size``), the
-        oldest snapshot is evicted from ``_history`` before the new one is
-        inserted.  The eviction is driven by ``_order``'s ``maxlen`` — when a
-        new element is appended to a full deque, the leftmost element is
-        automatically dropped, and we mirror that eviction in ``_history``.
-
-        Parameters
-        ----------
-        version_id   : int  — typically the global round number.
-        weights_dict : dict[str, np.ndarray] — current global model weights.
-        """
-        # Evict oldest if at capacity (deque.append with maxlen handles _order)
+        """Snapshot and store the global model at version_id."""
         if len(self._history) >= self.max_size:
-            oldest = self._order[0]   # leftmost = oldest; will be dropped by deque
+            oldest = self._order[0]
             del self._history[oldest]
-            self.logger.debug(
-                "Evicted model snapshot version %d from history.", oldest
-            )
+            logger.debug("Evicted model snapshot version %d from history.", oldest)
 
-        # Deep copy: callers may mutate their weights_dict without corrupting history
         self._history[version_id] = {k: v.copy() for k, v in weights_dict.items()}
-        self._order.append(version_id)    # may drop oldest from left if maxlen reached
+        self._order.append(version_id)
 
-        self.logger.info(
+        logger.info(
             "Recorded model version %d. Buffer size: %d / %d.",
             version_id, len(self._history), self.max_size,
         )
 
     def get_drift(self, from_version: int, to_weights: dict) -> dict:
-        """
-        Compute the per-parameter drift from a historical snapshot to current weights.
-
-        Drift formula used by SABD::
-
-            Δ_{s→t}[k] = θ_t[k] − θ_s[k]   for each parameter key k
-
-        where s = ``from_version`` (client's base version) and t = current round.
-        Large drift indicates the global model has evolved significantly since
-        the client's update was computed, implying high staleness.
-
-        Parameters
-        ----------
-        from_version : int
-            Version ID the client trained on (its ``base_version`` tag).
-        to_weights   : dict[str, np.ndarray]
-            Current global model weights (θ_t).
-
-        Returns
-        -------
-        dict[str, np.ndarray]
-            Parameter-wise signed drift arrays.
-
-        Raises
-        ------
-        ValueError
-            If ``from_version`` has been evicted from the buffer or was never
-            recorded.  SABD should fall back to treating the update as maximally
-            stale in this case.
-        """
+        """Compute per-parameter drift: delta[k] = theta_t[k] - theta_s[k]."""
         if from_version not in self._history:
             available = sorted(self._history.keys())
             raise ValueError(
@@ -131,46 +69,25 @@ class ModelHistoryBuffer:
             )
 
         base = self._history[from_version]
-        # Δ_{s→t}[k] = θ_t[k] − θ_s[k]
         drift = {k: to_weights[k] - base[k] for k in to_weights}
 
-        drift_norm = float(
-            np.sqrt(sum(np.sum(d ** 2) for d in drift.values()))
-        )
-        self.logger.debug(
-            "Drift from version %d → current: L2 norm = %.6f", from_version, drift_norm
-        )
+        drift_norm = float(np.sqrt(sum(np.sum(d ** 2) for d in drift.values())))
+        logger.debug("Drift from version %d -> current: L2 norm = %.6f", from_version, drift_norm)
         return drift
 
-    # ------------------------------------------------------------------
-    # Query helpers
-    # ------------------------------------------------------------------
-
     def has_version(self, version_id: int) -> bool:
-        """Return True if ``version_id`` is currently in the buffer."""
+        """Return True if version_id is currently in the buffer."""
         return version_id in self._history
 
-    def get_oldest_version(self) -> int | None:
-        """
-        Return the version_id of the oldest retained snapshot, or None if empty.
-
-        The oldest version is the first element of ``_order`` (leftmost = FIFO head).
-        Staleness of a client update relative to the oldest retained snapshot can
-        be computed as ``current_version - get_oldest_version()``.
-        """
+    def get_oldest_version(self):
+        """Return the version_id of the oldest retained snapshot, or None if empty."""
         return self._order[0] if self._order else None
 
-    def get_latest_version(self) -> int | None:
-        """
-        Return the version_id of the most recently recorded snapshot, or None.
-
-        This should equal the server's current global round number after every
-        round's ``record()`` call.
-        """
+    def get_latest_version(self):
+        """Return the version_id of the most recently recorded snapshot, or None."""
         return self._order[-1] if self._order else None
 
     def __len__(self) -> int:
-        """Number of snapshots currently held in the buffer."""
         return len(self._history)
 
     def __repr__(self) -> str:
@@ -179,3 +96,143 @@ class ModelHistoryBuffer:
             f"len={len(self)}, "
             f"versions={list(self._order)})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Legacy akshat ModelHistory for WebSocket server
+# ---------------------------------------------------------------------------
+
+class ModelHistory:
+    """Per-task model management: round tracking, versioning, serialisation.
+    Used by the FastAPI WebSocket server to serve models and track rounds.
+    """
+
+    def __init__(self, initial_models: dict, checkpoint_dir: str = "./results/checkpoints"):
+        self.models = {}
+        self.checkpoint_dir = checkpoint_dir
+        # Per-client personalized model storage: {client_id: {"weights", "task", "updated_at"}}
+        self._client_models: dict = {}
+        # A/B version tags: {task: {"A": version_hash, "B": version_hash}}
+        self._ab_versions: dict = {}
+
+        import os
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        for task, model in initial_models.items():
+            weights = {}
+            for name, param in model.named_parameters():
+                weights[name] = param.data.cpu().numpy().copy()
+
+            self.models[task] = {
+                "weights": weights,
+                "round": 0,
+                "version": self._compute_version(weights),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "loss_history": [],
+            }
+            logger.info(
+                "ModelHistory: initialized task=%s, params=%d, version=%s",
+                task, sum(w.size for w in weights.values()),
+                self.models[task]["version"][:8],
+            )
+
+    def _compute_version(self, weights: dict) -> str:
+        """Compute a hash-based version string for a set of weights."""
+        flat = np.concatenate([v.flatten() for v in weights.values()])
+        hash_bytes = hashlib.sha256(flat.tobytes()).digest()
+        return base64.b64encode(hash_bytes).decode("utf-8")[:16]
+
+    def get_round(self, task: str) -> int:
+        """Get current round number for a task."""
+        if task not in self.models:
+            return 0
+        return self.models[task]["round"]
+
+    def get_latest(self, task: str) -> dict:
+        """Get the latest model info for a task (weights, round, version, timestamp)."""
+        if task not in self.models:
+            return {"weights": {}, "round": 0, "version": "", "timestamp": ""}
+
+        model_info = self.models[task]
+        # Serialize weights for WebSocket transmission
+        serialized = self.serialize_weights(model_info["weights"])
+        return {
+            "weights": serialized,
+            "round": model_info["round"],
+            "version": model_info["version"],
+            "timestamp": model_info["timestamp"],
+        }
+
+    def update(self, task: str, new_weights: dict, loss: float = 0.0) -> None:
+        """Update the global model for a task after aggregation."""
+        if task not in self.models:
+            logger.warning("ModelHistory.update: unknown task=%s", task)
+            return
+
+        self.models[task]["weights"] = {k: v.copy() for k, v in new_weights.items()}
+        self.models[task]["round"] += 1
+        self.models[task]["version"] = self._compute_version(new_weights)
+        self.models[task]["timestamp"] = datetime.now(timezone.utc).isoformat()
+        self.models[task]["loss_history"].append(loss)
+
+        logger.info(
+            "ModelHistory: updated task=%s, round=%d, loss=%.6f, version=%s",
+            task, self.models[task]["round"], loss,
+            self.models[task]["version"][:8],
+        )
+
+    def get_personalized(self, client_id: str, task: str, alpha: float = 0.2) -> dict:
+        """Return a personalized model for a client.
+
+        w_personalized = (1 - alpha) * w_global + alpha * w_local
+
+        Falls back to global model if no local model exists yet for this client.
+        alpha=0 → pure global model; alpha=1 → pure local model.
+        """
+        global_weights = self.models[task]["weights"]
+        local_state = self._client_models.get(client_id)
+        if local_state is None or local_state.get("task") != task:
+            return {k: v.copy() for k, v in global_weights.items()}
+        local_weights = local_state["weights"]
+        return {
+            k: (1.0 - alpha) * global_weights[k] + alpha * local_weights[k]
+            for k in global_weights
+        }
+
+    def update_client_local(self, client_id: str, weight_delta: dict, task: str) -> None:
+        """Store a client's local model (global weights + their update delta)."""
+        if task not in self.models:
+            return
+        global_weights = self.models[task]["weights"]
+        local_weights = {k: global_weights[k] + weight_delta[k] for k in global_weights}
+        self._client_models[client_id] = {
+            "weights": local_weights,
+            "task": task,
+            "updated_at": time.time(),
+        }
+
+    def tag_ab_version(self, task: str, slot: str) -> None:
+        """Tag current model version as 'A' or 'B' for A/B testing."""
+        if task not in self.models:
+            return
+        version = self.models[task]["version"]
+        self._ab_versions.setdefault(task, {})[slot] = version
+        logger.info("Tagged %s-%s as version %s", task, slot, version[:8])
+
+    def serialize_weights(self, weights: dict) -> str:
+        """numpy arrays -> lists -> msgpack bytes -> base64 string."""
+        serializable = {}
+        for key, val in weights.items():
+            serializable[key] = val.tolist()
+        packed = msgpack.packb(serializable, use_bin_type=True)
+        return base64.b64encode(packed).decode("utf-8")
+
+    def deserialize_weights(self, b64_str: str) -> dict:
+        """Reverses serialize_weights. Returns dict of numpy arrays."""
+        packed = base64.b64decode(b64_str)
+        unpacked = msgpack.unpackb(packed, raw=False)
+        weights = {}
+        for key, val in unpacked.items():
+            k = key if isinstance(key, str) else key.decode("utf-8")
+            weights[k] = np.array(val, dtype=np.float32)
+        return weights

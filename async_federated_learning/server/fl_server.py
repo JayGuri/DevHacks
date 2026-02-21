@@ -1,438 +1,548 @@
-"""
-server/fl_server.py
-===================
-Asynchronous federated learning server.
-
-Architecture
-------------
-Clients run in parallel threads within each round.  After training they push
-their ``ClientUpdate`` objects into a thread-safe ``queue.Queue``.  At the end
-of every round the server drains the queue, filters stale / Byzantine updates,
-weights survivors by staleness + dataset size, and aggregates with the
-configured strategy.
-
-Threading model
----------------
-``_model_lock`` protects all reads and writes of ``self.model``.  The lock is
-held for the *minimum* duration required:
-
-- ``get_global_weights()`` — acquire, copy, release.
-- ``_apply_delta()``       — acquire, update, record in history, release.
-
-NEVER hold ``_model_lock`` while calling any other lock-acquiring function
-(``model_history.record``, aggregation, etc.) — deadlock risk.
-
-Staleness weighting
--------------------
-A client whose update is d rounds stale receives a soft downweight::
-
-    w_staleness(d) = 1 / (1 + d · penalty_factor)
-
-staleness=0 → weight=1.0
-staleness=2, penalty=0.5 → weight=0.5
-staleness=∞ → weight→0
-
-The combined weight before normalisation is::
-
-    w_i = w_staleness(d_i) · num_samples_i
-
-so larger, more timely clients dominate the aggregate.
-
-SABD / Anomaly integration
---------------------------
-``AnomalyDetector.score_update`` is called per update before adding to the
-valid list.  The detector internally calls ``SABDCorrector.correct`` (if
-attached) so the cosine divergence signal is staleness-corrected.  Updates
-flagged as Byzantine are discarded.
-"""
-
+# server/fl_server.py — Connection manager, task-aware async buffer, WebSocket router
+import asyncio
+import json
+import time
 import logging
-import queue
-import threading
+from datetime import datetime, timezone
 
+import jwt
 import numpy as np
-import torch
+from fastapi import HTTPException
 
-from async_federated_learning.aggregation.aggregator import get_aggregator
-from async_federated_learning.client.fl_client import ClientUpdate
-from async_federated_learning.config import Config
-from async_federated_learning.detection.anomaly import AnomalyDetector
-from async_federated_learning.models.cnn import FLModel, evaluate_model
-from async_federated_learning.server.model_history import ModelHistoryBuffer
+from detection.anomaly import check_l2_norm
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("fedbuff.server")
+
+# Module-level auth state
+_jwt_secret: str = None
+connected_clients: dict = {}
+# {client_id: {"websocket": ws, "role": str, "display_name": str,
+#              "participant": str, "task": str, "connected_at": float,
+#              "last_heartbeat": float, "is_joining": bool}}
 
 
-class AsyncFLServer:
+def init_jwt(secret: str) -> None:
+    """Initialize the JWT secret used for token verification."""
+    global _jwt_secret
+    _jwt_secret = secret
+    logger.info("JWT secret initialized.")
+
+
+# Kept for backwards compatibility — calls init_jwt if the file has a jwt_secret field.
+def load_users(filepath: str) -> None:
+    """Legacy: reads users.json and extracts jwt_secret. Use init_jwt() instead."""
+    global _jwt_secret
+    with open(filepath, "r") as f:
+        data = json.load(f)
+    _jwt_secret = data["jwt_secret"]
+    logger.info("Loaded JWT secret from %s (legacy load_users)", filepath)
+
+
+def verify_token(token: str) -> dict:
+    """Decodes and validates JWT. Raises HTTPException(403) on failure. Returns full payload."""
+    global _jwt_secret
+    if not _jwt_secret:
+        raise HTTPException(status_code=500, detail="JWT secret not configured")
+    try:
+        payload = jwt.decode(token, _jwt_secret, algorithms=["HS256"])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=403, detail="Token expired")
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(status_code=403, detail=f"Invalid token: {e}")
+
+
+def register_client(client_id: str, websocket, role: str, display_name: str,
+                     participant: str, task: str) -> None:
+    """Register a client connection."""
+    connected_clients[client_id] = {
+        "websocket": websocket,
+        "role": role,
+        "display_name": display_name,
+        "participant": participant,
+        "task": task,
+        "connected_at": time.time(),
+        "last_heartbeat": time.time(),
+        "is_joining": True,   # grace period until first weight_update received
+    }
+    logger.info(
+        "Client registered: %s (%s) participant=%s task=%s",
+        client_id, display_name, participant, task,
+    )
+
+
+def update_heartbeat(client_id: str) -> None:
+    """Touch the heartbeat timestamp and clear the joining grace period."""
+    if client_id in connected_clients:
+        connected_clients[client_id]["last_heartbeat"] = time.time()
+        connected_clients[client_id]["is_joining"] = False
+
+
+def deregister_client(client_id: str) -> None:
+    """Remove a client connection."""
+    if client_id in connected_clients:
+        del connected_clients[client_id]
+        logger.info("Client deregistered: %s", client_id)
+
+
+def require_role(required_role: str):
+    """FastAPI dependency. Reads Authorization: Bearer header. Returns payload if role matches."""
+    from fastapi import Depends, Request
+
+    async def _dependency(request: Request):
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing Bearer token")
+        token = auth_header[7:]
+        payload = verify_token(token)
+        if payload.get("role") != required_role:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Required role: {required_role}, got: {payload.get('role')}",
+            )
+        return payload
+
+    return _dependency
+
+
+async def heartbeat_checker(
+    buffer: "AsyncBuffer",
+    timeout: float = 60.0,
+    check_interval: float = 10.0,
+) -> None:
+    """Periodic task: scans connected_clients for stale entries.
+
+    If a client's last_heartbeat is older than `timeout` seconds:
+      1. Remove from buffer's _queued_clients (prevent permanent block)
+      2. Deregister from connected_clients
+      3. Emit client_timeout SSE event
     """
-    Asynchronous federated learning server.
+    from evaluation.metrics import emit_event
 
-    One global round consists of:
-    1. Broadcast current global weights to all clients.
-    2. Spawn one thread per client; each thread calls
-       ``client.simulate_network_delay()`` then ``client.local_train()``.
-    3. Join all threads (async arrival is modelled by the variable delay).
-    4. Drain the update queue, filter stale / Byzantine, aggregate.
-    5. Optionally evaluate on the test set every N rounds.
+    logger.info(
+        "Heartbeat checker started (timeout=%.1fs, interval=%.1fs)",
+        timeout, check_interval,
+    )
+    while True:
+        await asyncio.sleep(check_interval)
+        now = time.time()
+        stale = [
+            (cid, info)
+            for cid, info in list(connected_clients.items())
+            if now - info.get("last_heartbeat", now) > timeout
+        ]
+        for client_id, info in stale:
+            task = info.get("task", "")
+            logger.warning(
+                "Client timeout detected: %s (task=%s, last_seen=%.1fs ago)",
+                client_id, task, now - info["last_heartbeat"],
+            )
+            if task and task in buffer._queued_clients:
+                buffer._queued_clients[task].discard(client_id)
+            deregister_client(client_id)
+            asyncio.create_task(emit_event("client_timeout", {
+                "client_id": client_id,
+                "task": task,
+                "last_heartbeat": info["last_heartbeat"],
+            }))
 
-    Parameters
-    ----------
-    model            : FLModel          The global model instance.
-    config           : Config           Experiment configuration.
-    test_dataloader  : DataLoader       Held-out test set.
-    model_history    : ModelHistoryBuffer
-        Rolling weight snapshot buffer (used by SABD for drift computation).
-    anomaly_detector : AnomalyDetector
-        Composite Byzantine detector (SABD-aware when a corrector is attached).
+
+class AsyncBuffer:
+    """Task-aware asyncio.Queue-based staging buffer for FedBuff.
+
+    Supports:
+    - Event-driven aggregation: wakes immediately when min_updates threshold is
+      reached and max_wait_seconds has elapsed, rather than polling every 0.5s.
+    - Per-task independent watcher coroutines for zero cross-task interference.
+    - Staleness gate: updates with staleness > max_staleness are rejected before
+      enqueueing, keeping the buffer free of dangerously stale updates.
     """
 
     def __init__(
         self,
-        model: FLModel,
-        config: Config,
-        test_dataloader,
-        model_history: ModelHistoryBuffer,
-        anomaly_detector: AnomalyDetector,
+        buffer_size_k: int,
+        supported_tasks: list,
+        aggregation_callback,
+        get_current_round=None,
+        max_staleness: int = 10,
+        min_updates: int = None,
+        max_wait_seconds: float = 10.0,
+        max_updates_per_batch: int = 20,
     ):
-        self.model = model
-        self.config = config
-        self.test_dataloader = test_dataloader
-        self.model_history = model_history
-        self.anomaly_detector = anomaly_detector
-        self.aggregation_fn = get_aggregator(config.aggregation_method, config)
+        self.buffer_size_k = buffer_size_k
+        self.min_updates = min_updates if min_updates is not None else buffer_size_k
+        self.max_wait_seconds = max_wait_seconds
+        self.max_updates_per_batch = max_updates_per_batch
+        self.queues = {task: asyncio.Queue() for task in supported_tasks}
+        self._locks = {task: asyncio.Lock() for task in supported_tasks}
+        self._queued_clients = {task: set() for task in supported_tasks}
+        self.aggregation_callback = aggregation_callback
+        self._get_current_round = get_current_round
+        self._max_staleness = max_staleness
+        # Event-driven: one asyncio.Event per task, signalled by put()
+        self._new_update_events = {task: asyncio.Event() for task in supported_tasks}
+        # Timer: tracks when min_updates threshold was first reached per task
+        self._timer_started_at = {task: None for task in supported_tasks}
 
-        self.global_round: int = 0
-        self.update_queue: queue.Queue = queue.Queue()
-        self._model_lock = threading.Lock()
+    async def put(self, update: dict, task: str) -> None:
+        """Enqueues an update into the task-specific buffer queue.
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Accumulated metrics across rounds
-        self.metrics_history: dict = {
-            "round": [],
-            "accuracy": [],
-            "loss": [],
-            "num_processed": [],
-            "num_discarded": [],
-            "avg_staleness": [],
-            "byzantine_detected": [],
-        }
-
-        logger.info(
-            "AsyncFLServer initialised — aggregation=%s, device=%s.",
-            config.aggregation_method, self.device,
-        )
-
-    # ------------------------------------------------------------------
-    # Thread-safe model access
-    # ------------------------------------------------------------------
-
-    def get_global_weights(self) -> dict:
+        Staleness gate: if get_current_round is provided and the update's
+        staleness exceeds max_staleness, the update is silently rejected
+        and an SSE event is emitted.
         """
-        Return a copy of the current global model weights.
+        if task not in self.queues:
+            logger.error("Unknown task for buffer: %s", task)
+            return
 
-        Thread-safe: acquires ``_model_lock`` for the duration of the copy.
-        """
-        with self._model_lock:
-            return self.model.get_weights()
+        client_id = update.get("client_id", "unknown")
 
-    # ------------------------------------------------------------------
-    # Update ingestion
-    # ------------------------------------------------------------------
+        # --- Staleness gate ---
+        if self._get_current_round is not None:
+            current_round = self._get_current_round(task)
+            global_round_received = update.get("global_round_received", 0)
+            staleness = max(0, current_round - global_round_received)
+            if staleness > self._max_staleness:
+                logger.warning(
+                    "Update REJECTED (staleness=%d > max=%d): client=%s task=%s",
+                    staleness, self._max_staleness, client_id, task,
+                )
+                try:
+                    from evaluation.metrics import emit_event
+                    asyncio.create_task(emit_event("update_rejected", {
+                        "client_id": client_id,
+                        "task": task,
+                        "reason": "staleness_exceeded",
+                        "staleness": staleness,
+                        "max_staleness": self._max_staleness,
+                    }))
+                except Exception:
+                    pass
+                return
 
-    def receive_update(self, update: ClientUpdate) -> None:
-        """
-        Enqueue a client update for processing at the next aggregation step.
+        async with self._locks[task]:
+            if client_id in self._queued_clients[task]:
+                logger.warning("Duplicate update discarded: client=%s task=%s", client_id, task)
+                return
+            self._queued_clients[task].add(client_id)
+            await self.queues[task].put(update)
+            current_size = self.queues[task].qsize()
+            # Start timer when min_updates threshold is first reached
+            if current_size >= self.min_updates and self._timer_started_at[task] is None:
+                self._timer_started_at[task] = asyncio.get_event_loop().time()
+                logger.debug("Timer started for task=%s at size=%d", task, current_size)
 
-        Non-blocking (``put_nowait``).  Called from client threads.
-        """
-        self.update_queue.put_nowait(update)
         logger.debug(
-            "Queued update from client %d (round %d).",
-            update.client_id, update.round_number,
+            "Buffer put: task=%s, client=%s, buffer_size=%d/%d",
+            task, client_id, current_size, self.buffer_size_k,
         )
 
-    # ------------------------------------------------------------------
-    # Staleness helpers
-    # ------------------------------------------------------------------
+        # Signal the per-task watcher
+        self._new_update_events[task].set()
 
-    def compute_staleness(self, update: ClientUpdate) -> int:
+        # Emit buffer_size telemetry event
+        try:
+            from evaluation.metrics import emit_event
+            asyncio.create_task(emit_event("buffer_size", {
+                "task": task,
+                "size": current_size,
+                "capacity": self.buffer_size_k,
+            }))
+        except Exception:
+            pass
+
+    async def drain_partial(self, task: str, max_items: int) -> list:
+        """Drain up to max_items from queue atomically. Returns all available up to cap."""
+        if task not in self.queues:
+            return []
+        async with self._locks[task]:
+            n = min(self.queues[task].qsize(), max_items)
+            if n == 0:
+                return []
+            items = []
+            for _ in range(n):
+                item = self.queues[task].get_nowait()
+                cid = item.get("client_id", "unknown")
+                self._queued_clients[task].discard(cid)
+                items.append(item)
+            self._timer_started_at[task] = None  # reset timer after drain
+            logger.info(
+                "Buffer partial drain: task=%s, items=%d, remaining=%d",
+                task, len(items), self.queues[task].qsize(),
+            )
+            return items
+
+    async def drain(self, task: str) -> list:
+        """Legacy drain: dequeues exactly buffer_size_k if available.
+        Kept for backward compatibility with existing tests.
         """
-        Return the staleness of an update in rounds.
+        if task not in self.queues:
+            return []
 
-        staleness = global_round − update.round_number
+        async with self._locks[task]:
+            if self.queues[task].qsize() < self.buffer_size_k:
+                return []
+
+            items = []
+            for _ in range(self.buffer_size_k):
+                item = self.queues[task].get_nowait()
+                client_id = item.get("client_id", "unknown")
+                if client_id in self._queued_clients[task]:
+                    self._queued_clients[task].remove(client_id)
+                items.append(item)
+            self._timer_started_at[task] = None
+
+            logger.info(
+                "Buffer drained: task=%s, items=%d, remaining=%d",
+                task, len(items), self.queues[task].qsize(),
+            )
+            return items
+
+    async def _task_watcher(self, task: str) -> None:
+        """Per-task event-driven watcher loop.
+
+        Wakes up when:
+        - A new update event fires (from put()), or
+        - max_wait_seconds has elapsed (ceiling timer).
+
+        Aggregates when:
+        - max_updates_per_batch items queued (batch cap), or
+        - min_updates met AND max_wait_seconds elapsed since threshold was reached.
         """
-        return self.global_round - update.round_number
-
-    def staleness_weight(self, staleness: int) -> float:
-        """
-        Smooth exponential-like staleness discount.
-
-        Formula::
-
-            w(d) = 1 / (1 + d · penalty_factor)
-
-        staleness=0 → 1.0 (no penalty).
-        staleness=∞ → 0.0 (fully discounted).
-
-        Parameters
-        ----------
-        staleness : int   Round gap between client start and current server round.
-
-        Returns
-        -------
-        float   Weight in (0, 1].
-        """
-        # w(d) = 1 / (1 + d · penalty_factor)
-        return 1.0 / (1.0 + staleness * self.config.staleness_penalty_factor)
-
-    # ------------------------------------------------------------------
-    # Core aggregation
-    # ------------------------------------------------------------------
-
-    def aggregate_pending_updates(self) -> tuple:
-        """
-        Drain the update queue, filter, score, and aggregate.
-
-        Steps
-        -----
-        1. Drain all items currently in the queue into ``pending``.
-        2. For each update:
-           a. Compute staleness; discard if > ``config.max_staleness``.
-           b. Score with ``AnomalyDetector``; discard if Byzantine.
-           c. Otherwise add to ``valid`` list with its staleness.
-        3. GUARD: if ``valid`` is empty, skip aggregation and return zeros.
-        4. Compute combined weight = staleness_weight × num_samples, normalise.
-        5. Call ``aggregation_fn`` on the surviving deltas.
-        6. Apply the aggregated delta to the global model.
-
-        Returns
-        -------
-        tuple[int, int, float]
-            ``(num_processed, num_discarded, avg_staleness)``
-        """
-        # ── Step 1: drain queue ─────────────────────────────────────────
-        pending = []
-        while not self.update_queue.empty():
+        event = self._new_update_events[task]
+        while True:
             try:
-                pending.append(self.update_queue.get_nowait())
-            except queue.Empty:
-                break
+                await asyncio.wait_for(event.wait(), timeout=self.max_wait_seconds)
+            except asyncio.TimeoutError:
+                pass  # ceiling timer hit — fall through to check condition
+            finally:
+                event.clear()
 
-        if not pending:
-            logger.warning("aggregate_pending_updates — queue was empty.")
-            return (0, 0, 0.0)
-
-        # Get current weights once (used by AnomalyDetector / SABD)
-        current_weights = self.get_global_weights()
-
-        valid = []       # list of (ClientUpdate, staleness)
-        discarded = 0
-        staleness_vals = []
-
-        # ── Steps 2a-2c: filter ─────────────────────────────────────────
-        for update in pending:
-            staleness = self.compute_staleness(update)
-            update.staleness = staleness
-
-            if staleness > self.config.max_staleness:
-                logger.warning(
-                    "Discarding stale update from client %d (staleness=%d > max=%d).",
-                    update.client_id, staleness, self.config.max_staleness,
-                )
-                discarded += 1
+            current_size = self.queues[task].qsize()
+            if current_size == 0:
                 continue
 
-            score = self.anomaly_detector.score_update(update, pending, current_weights)
-            if self.anomaly_detector.is_byzantine(score):
-                logger.warning(
-                    "Flagged client %d as Byzantine (score=%.3f > threshold=%.3f).",
-                    update.client_id, score, self.anomaly_detector.threshold,
-                )
-                discarded += 1
-                continue
+            now = asyncio.get_event_loop().time()
+            timer_started = self._timer_started_at[task]
+            time_elapsed = (now - timer_started) if timer_started is not None else 0.0
 
-            valid.append((update, staleness))
-            staleness_vals.append(staleness)
-
-        # ── Step 3: guard ───────────────────────────────────────────────
-        if not valid:
-            logger.warning(
-                "No valid updates this round. Skipping aggregation "
-                "(%d discarded).", discarded,
+            should_aggregate = (
+                current_size >= self.max_updates_per_batch  # batch cap
+                or (current_size >= self.min_updates and time_elapsed >= self.max_wait_seconds)
             )
-            return (0, discarded, 0.0)
 
-        # ── Step 4: combined weights ─────────────────────────────────────
-        # w_i = w_staleness(d_i) · num_samples_i
-        raw_weights = [
-            self.staleness_weight(s) * u.num_samples
-            for u, s in valid
+            if should_aggregate:
+                updates = await self.drain_partial(task, self.max_updates_per_batch)
+                if updates:
+                    try:
+                        await self.aggregation_callback(updates, task)
+                    except Exception as e:
+                        logger.error(
+                            "Aggregation callback failed: task=%s, error=%s", task, e,
+                        )
+
+    async def buffer_watcher(self) -> None:
+        """Spawns one _task_watcher coroutine per task via asyncio.gather().
+
+        Replaces the old 0.5s polling loop with an event-driven design where
+        each task wakes immediately when new updates arrive.
+        """
+        logger.info(
+            "Event-driven buffer watcher started "
+            "(min_updates=%d, max_wait=%.1fs, max_batch=%d)",
+            self.min_updates, self.max_wait_seconds, self.max_updates_per_batch,
+        )
+        watchers = [
+            asyncio.create_task(self._task_watcher(task))
+            for task in self.queues
         ]
-        total = sum(raw_weights)
-        norm_weights = [w / total for w in raw_weights]
+        try:
+            await asyncio.gather(*watchers)
+        except asyncio.CancelledError:
+            for w in watchers:
+                w.cancel()
+            raise
 
-        # ── Step 5: aggregate ───────────────────────────────────────────
-        deltas = [u.weight_delta for u, _ in valid]
-        aggregated_delta = self.aggregation_fn(deltas, weights=norm_weights)
+    def size(self, task: str) -> int:
+        """Returns current queue size for a task."""
+        if task not in self.queues:
+            return 0
+        return self.queues[task].qsize()
 
-        # ── Step 6: apply ───────────────────────────────────────────────
-        self._apply_delta(aggregated_delta)
 
-        avg_stale = float(np.mean(staleness_vals)) if staleness_vals else 0.0
+async def handle_websocket(
+    websocket,
+    token: str,
+    task: str,
+    buffer: "AsyncBuffer",
+    model_history,
+    config,
+    network_simulator=None,
+) -> None:
+    """Full WebSocket session handler for one client connection."""
+    from evaluation.metrics import emit_event
+
+    # Step 1: Verify token
+    try:
+        payload = verify_token(token)
+    except HTTPException:
+        await websocket.close(code=1008, reason="Authentication failed")
+        return
+
+    client_id = payload.get("sub", "unknown")
+    role = payload.get("role", "unknown")
+    display_name = payload.get("display_name", client_id)
+    participant = payload.get("participant", "unknown")
+    token_task = payload.get("task", task)
+
+    # Step 2: Validate task
+    if task not in config.SUPPORTED_TASKS:
+        await websocket.close(code=1008, reason=f"Unsupported task: {task}")
+        return
+
+    # Step 3: Register client
+    register_client(client_id, websocket, role, display_name, participant, task)
+
+    # Step 4: Emit client_joined event
+    await emit_event("client_joined", {
+        "client_id": client_id,
+        "participant": participant,
+        "task": task,
+        "display_name": display_name,
+    })
+
+    try:
+        # Step 5: Send current global model for this task
+        latest = model_history.get_latest(task)
+        await websocket.send_json({
+            "type": "global_model",
+            "task": task,
+            "round_num": latest["round"],
+            "weights": latest["weights"],
+            "version": latest["version"],
+            "timestamp": latest["timestamp"],
+        })
         logger.info(
-            "Round %d aggregation — processed=%d, discarded=%d, avg_staleness=%.2f.",
-            self.global_round, len(valid), discarded, avg_stale,
-        )
-        return (len(valid), discarded, avg_stale)
-
-    def _apply_delta(self, aggregated_delta: dict) -> None:
-        """
-        Apply the aggregated delta to the global model and record in history.
-
-        Formula::
-
-            θ_{t+1}[k] = θ_t[k] + lr · Δ_agg[k]
-
-        Thread-safe: ``_model_lock`` is held for the full read-update-write
-        cycle so no other thread can observe a partially updated model.
-        The history record is made *inside* the lock so the stored version
-        is exactly the model that clients will receive next round.
-        """
-        with self._model_lock:
-            current = self.model.get_weights()
-            # θ_{t+1}[k] = θ_t[k] + lr · Δ_agg[k]
-            updated = {
-                k: current[k] + aggregated_delta[k] * self.config.learning_rate
-                for k in current
-            }
-            self.model.set_weights(updated)
-            # Record *after* update so history[global_round] = post-aggregation model
-            self.model_history.record(self.global_round, updated)
-
-        logger.debug(
-            "_apply_delta — round %d model updated and recorded in history.",
-            self.global_round,
+            "Sent global model to %s: task=%s, round=%d",
+            client_id, task, latest["round"],
         )
 
-    # ------------------------------------------------------------------
-    # Round orchestration
-    # ------------------------------------------------------------------
+        # Message dispatch loop
+        async for message in websocket.iter_text():
+            try:
+                data = json.loads(message)
+                msg_type = data.get("type", "")
 
-    def run_round(self, clients: list) -> dict:
-        """
-        Execute one complete global round.
+                if msg_type == "weight_update":
+                    # Update heartbeat — clears is_joining grace period
+                    update_heartbeat(client_id)
 
-        Sequence
-        --------
-        1. Increment ``global_round``.
-        2. Broadcast current global weights to every client.
-        3. Spawn one thread per client (delay + train + enqueue).
-        4. Join all threads.
-        5. Aggregate pending updates.
-        6. Evaluate every ``eval_every_n_rounds`` rounds.
+                    # Parse and validate
+                    update_client_id = data.get("client_id", client_id)
+                    update_task = data.get("task", task)
+                    round_num = data.get("round_num", 0)
+                    global_round_received = data.get("global_round_received", 0)
+                    weights_b64 = data.get("weights", "")
+                    num_samples = data.get("num_samples", 0)
+                    local_loss = data.get("local_loss", 0.0)
+                    privacy_budget = data.get("privacy_budget", {})
+                    timestamp = data.get("timestamp", datetime.now(timezone.utc).isoformat())
 
-        Parameters
-        ----------
-        clients : list[FLClient]   All clients participating this round.
+                    # Deserialize weights
+                    weights = model_history.deserialize_weights(weights_b64)
 
-        Returns
-        -------
-        dict   Per-round metrics snapshot.
-        """
-        self.global_round += 1
-        logger.info("=== Starting round %d ===", self.global_round)
+                    # Layer 1: Gatekeeper L2 norm check
+                    passed, norm = check_l2_norm(weights, config.L2_NORM_THRESHOLD)
 
-        # ── Step 2: broadcast ───────────────────────────────────────────
-        global_weights = self.get_global_weights()
-        for client in clients:
-            client.receive_global_model(global_weights, self.global_round)
+                    if not passed:
+                        await websocket.send_json({
+                            "type": "rejected",
+                            "client_id": client_id,
+                            "task": task,
+                            "reason": "l2_norm_exceeded",
+                            "round_num": round_num,
+                            "norm": norm,
+                            "threshold": config.L2_NORM_THRESHOLD,
+                        })
+                        await emit_event("update_rejected", {
+                            "client_id": client_id,
+                            "task": task,
+                            "reason": "l2_norm_exceeded",
+                            "norm": norm,
+                            "round_num": round_num,
+                        })
+                        logger.warning(
+                            "Update rejected (L2 norm): client=%s, task=%s, norm=%.4f",
+                            client_id, task, norm,
+                        )
+                    else:
+                        # Passed gatekeeper — build update dict
+                        update = {
+                            "client_id": client_id,
+                            "task": task,
+                            "round_num": round_num,
+                            "global_round_received": global_round_received,
+                            "weights": weights,
+                            "num_samples": num_samples,
+                            "local_loss": local_loss,
+                            "timestamp": timestamp,
+                        }
 
-        # ── Steps 3–4: parallel client execution ─────────────────────────
-        threads = []
+                        # Network simulation (if enabled)
+                        if network_simulator is not None:
+                            update = await network_simulator.simulate_client_upload(
+                                update, client_id
+                            )
+                            if update is None:
+                                logger.info(
+                                    "Update dropped by network simulator: client=%s", client_id
+                                )
+                                continue
 
-        def client_task(c):
-            c.simulate_network_delay()
-            update = c.local_train(self.global_round)
-            self.receive_update(update)
+                        await buffer.put(update, task)
+                        await emit_event("update_received", {
+                            "client_id": client_id,
+                            "task": task,
+                            "round_num": round_num,
+                            "num_samples": num_samples,
+                            "local_loss": local_loss,
+                            "norm": norm,
+                        })
+                        logger.info(
+                            "Update received: client=%s, task=%s, round=%d, "
+                            "norm=%.4f, samples=%d, loss=%.6f",
+                            client_id, task, round_num, norm, num_samples, local_loss,
+                        )
 
-        for client in clients:
-            t = threading.Thread(
-                target=client_task,
-                args=(client,),
-                name=f"client-{client.client_id}",
-                daemon=True,
-            )
-            threads.append(t)
-            t.start()
+                elif msg_type == "heartbeat":
+                    update_heartbeat(client_id)
+                    await websocket.send_json({"type": "heartbeat_ack", "client_id": client_id})
+                    logger.debug("Heartbeat from %s", client_id)
 
-        for t in threads:
-            t.join()
+                elif msg_type == "ping":
+                    update_heartbeat(client_id)
+                    await websocket.send_json({"type": "pong"})
 
-        # ── Step 5: aggregate ───────────────────────────────────────────
-        processed, discarded, avg_stale = self.aggregate_pending_updates()
+                else:
+                    logger.warning(
+                        "Unknown message type from %s: %s", client_id, msg_type
+                    )
 
-        # Update metrics history
-        self.metrics_history["num_processed"].append(processed)
-        self.metrics_history["num_discarded"].append(discarded)
-        self.metrics_history["avg_staleness"].append(avg_stale)
+            except json.JSONDecodeError:
+                logger.warning("Invalid JSON from %s", client_id)
+            except Exception as e:
+                logger.error("Error processing message from %s: %s", client_id, e)
 
-        round_metrics: dict = {
-            "round": self.global_round,
-            "processed": processed,
-            "discarded": discarded,
-            "avg_staleness": avg_stale,
-        }
-
-        # ── Step 6: evaluation ──────────────────────────────────────────
-        if self.global_round % self.config.eval_every_n_rounds == 0:
-            acc, loss = self.evaluate_and_log()
-            round_metrics["accuracy"] = acc
-            round_metrics["loss"] = loss
-
-        return round_metrics
-
-    # ------------------------------------------------------------------
-    # Evaluation
-    # ------------------------------------------------------------------
-
-    def evaluate_and_log(self) -> tuple:
-        """
-        Evaluate the global model on the held-out test set.
-
-        Creates a *fresh* ``FLModel`` instance for evaluation to avoid any
-        interference with the server's live model during concurrent operations.
-        Appends results to ``metrics_history``.
-
-        Returns
-        -------
-        tuple[float, float]   ``(accuracy, avg_loss)``
-        """
-        eval_model = FLModel(
-            self.config.in_channels,
-            self.config.num_classes,
-            self.config.hidden_dim,
-        ).to(self.device)
-
-        current_weights = self.get_global_weights()
-        eval_model.set_weights(current_weights)
-
-        acc, loss = evaluate_model(eval_model, self.test_dataloader, self.device)
-
-        self.metrics_history["round"].append(self.global_round)
-        self.metrics_history["accuracy"].append(acc)
-        self.metrics_history["loss"].append(loss)
-
-        logger.info(
-            "Round %d evaluation — accuracy=%.4f, loss=%.4f.",
-            self.global_round, acc, loss,
-        )
-        return acc, loss
-
-    # ------------------------------------------------------------------
-    # Metrics retrieval
-    # ------------------------------------------------------------------
-
-    def get_metrics(self) -> dict:
-        """Return the full accumulated metrics history across all rounds."""
-        return self.metrics_history
+    except Exception as e:
+        logger.info("WebSocket disconnected: %s (%s)", client_id, e)
+    finally:
+        # Remove from buffer's pending set to prevent permanent block on reconnect
+        if task in buffer._queued_clients:
+            buffer._queued_clients[task].discard(client_id)
+        deregister_client(client_id)
+        await emit_event("client_left", {
+            "client_id": client_id,
+            "participant": participant,
+            "task": task,
+        })
+        logger.info("Client disconnected: %s (task=%s)", client_id, task)
