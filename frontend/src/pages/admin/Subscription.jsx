@@ -10,7 +10,6 @@ import AppLayout from "@/components/layout/AppLayout";
 const Subscription = () => {
   const { currentUser, updateUser } = useAuth();
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
   const [razorpayLoaded, setRazorpayLoaded] = useState(false);
 
   const razorpayKeyId =
@@ -33,7 +32,7 @@ const Subscription = () => {
     script.src = "https://checkout.razorpay.com/v1/checkout.js";
     script.async = true;
     script.onload = () => setRazorpayLoaded(true);
-    script.onerror = () => setError("Failed to load payment gateway");
+    script.onerror = () => toast.error("Failed to load payment gateway");
     document.body.appendChild(script);
     return () => {
       const s = document.querySelector(
@@ -78,16 +77,17 @@ const Subscription = () => {
 
   const handleProSubscription = async () => {
     if (!razorpayLoaded) {
-      setError("Payment gateway is still loading. Please wait...");
+      toast.error("Payment gateway is still loading. Please wait...");
       return;
     }
     if (!razorpayKeyId) {
-      setError("Razorpay Key ID not configured. Please check your .env file.");
+      toast.error(
+        "Razorpay Key ID not configured. Please check your .env file.",
+      );
       return;
     }
 
     setLoading(true);
-    setError(null);
 
     try {
       const options = {
@@ -120,13 +120,13 @@ const Subscription = () => {
           response.error?.description ||
           response.error?.reason ||
           "Unknown error";
-        setError(`Payment failed: ${errorMsg}`);
+        toast.error(`Payment failed: ${errorMsg}`);
         setLoading(false);
       });
       rzp.open();
     } catch (err) {
       console.error("❌ Subscription error:", err);
-      setError(
+      toast.error(
         err.message || "Failed to initiate subscription. Please try again.",
       );
       setLoading(false);
@@ -197,15 +197,6 @@ const Subscription = () => {
             </div>
           )}
         </motion.div>
-
-        {error && (
-          <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 mb-6">
-            <div className="bg-destructive/10 border border-destructive/50 rounded-lg p-4 text-destructive">
-              <p className="font-medium">Error</p>
-              <p className="text-sm mt-1">{error}</p>
-            </div>
-          </div>
-        )}
 
         <div className="flex flex-col md:flex-row gap-8 justify-center items-stretch max-w-4xl mx-auto">
           {plans.map((plan, index) => (
