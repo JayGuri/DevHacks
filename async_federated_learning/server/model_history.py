@@ -171,8 +171,21 @@ class ModelHistory:
 
         # new_weights is the aggregated weight_diff. We must add it to the current global model.
         old_weights = self.models[task]["weights"]
+        # Use key intersection so mismatched schemas don't crash aggregation
+        common_keys = set(old_weights.keys()) & set(new_weights.keys())
+        missing_in_new = set(old_weights.keys()) - common_keys
+        extra_in_new = set(new_weights.keys()) - common_keys
+        if missing_in_new:
+            logger.warning(
+                "ModelHistory.update: keys in global model but missing from update (kept unchanged): %s",
+                missing_in_new,
+            )
+        if extra_in_new:
+            logger.warning(
+                "ModelHistory.update: extra keys in update ignored: %s", extra_in_new,
+            )
         self.models[task]["weights"] = {
-            k: old_weights[k] + new_weights[k]
+            k: old_weights[k] + new_weights[k] if k in common_keys else old_weights[k]
             for k in old_weights
         }
         self.models[task]["round"] += 1
@@ -225,19 +238,27 @@ class ModelHistory:
         logger.info("Tagged %s-%s as version %s", task, slot, version[:8])
 
     def serialize_weights(self, weights: dict) -> str:
-        """numpy arrays -> lists -> msgpack bytes -> base64 string."""
+        """numpy arrays -> lists -> msgpack bytes -> zlib compress -> base64 string."""
+        import zlib
         serializable = {}
         for key, val in weights.items():
             serializable[key] = val.tolist()
         packed = msgpack.packb(serializable, use_bin_type=True)
-        return base64.b64encode(packed).decode("utf-8")
+        compressed = zlib.compress(packed, level=6)
+        return base64.b64encode(compressed).decode("utf-8")
 
     def deserialize_weights(self, b64_str: str) -> dict:
-        """Reverses serialize_weights. Returns dict of numpy arrays."""
+        """Reverses serialize_weights. Auto-detects zlib compression."""
+        import zlib
         MAX_WEIGHT_ELEMENTS = 100_000_000  # ~400 MB at float32
 
-        packed = base64.b64decode(b64_str)
-        unpacked = msgpack.unpackb(packed, raw=False)
+        raw = base64.b64decode(b64_str)
+        # Auto-detect zlib compression (magic byte 0x78)
+        try:
+            raw = zlib.decompress(raw)
+        except zlib.error:
+            pass  # Not compressed — treat as raw msgpack
+        unpacked = msgpack.unpackb(raw, raw=False)
 
         # Security: cap total element count to prevent memory exhaustion
         total_elements = 0

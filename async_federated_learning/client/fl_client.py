@@ -379,18 +379,26 @@ class HonestTrainer:
 
 
 def serialize_weights(weights: dict) -> str:
-    """numpy arrays -> lists -> msgpack bytes -> base64 string."""
+    """numpy arrays -> lists -> msgpack bytes -> zlib compress -> base64 string."""
+    import zlib
     serializable = {}
     for key, val in weights.items():
         serializable[key] = val.tolist()
     packed = msgpack.packb(serializable, use_bin_type=True)
-    return base64.b64encode(packed).decode("utf-8")
+    compressed = zlib.compress(packed, level=6)
+    return base64.b64encode(compressed).decode("utf-8")
 
 
 def deserialize_weights(b64_str: str) -> dict:
-    """Reverses serialize_weights. Returns dict of numpy arrays."""
-    packed = base64.b64decode(b64_str)
-    unpacked = msgpack.unpackb(packed, raw=False)
+    """Reverses serialize_weights. Auto-detects zlib compression."""
+    import zlib
+    raw = base64.b64decode(b64_str)
+    # Auto-detect zlib compression (magic byte 0x78)
+    try:
+        raw = zlib.decompress(raw)
+    except zlib.error:
+        pass  # Not compressed — treat as raw msgpack
+    unpacked = msgpack.unpackb(raw, raw=False)
     weights = {}
     for key, val in unpacked.items():
         k = key if isinstance(key, str) else key.decode("utf-8")
@@ -502,6 +510,25 @@ class WSClient:
                             data.get("event", ""), data.get("task", ""),
                         )
 
+                    elif msg_type == "trust_report":
+                        my_score = data.get("trust_scores", {}).get(self.client_id)
+                        my_staleness = data.get("staleness_values", {}).get(self.client_id)
+                        rejected = data.get("rejected_clients", [])
+                        gk_rejected = data.get("gatekeeper_rejected", [])
+                        logger.info(
+                            "Trust report: round=%d, my_trust_score=%s, "
+                            "my_staleness=%s, rejected=%s, gatekeeper_rejected=%s",
+                            data.get("round", 0),
+                            my_score,
+                            my_staleness,
+                            rejected,
+                            gk_rejected,
+                        )
+                        if my_score is not None and my_score == 0.0:
+                            logger.warning(
+                                "⚠ My trust score is 0.0 — my update was flagged as suspicious!"
+                            )
+
                     elif msg_type == "pong":
                         logger.debug("Pong received")
 
@@ -603,21 +630,10 @@ async def main():
         client_id, client_role, dataset, data_partition, total_nodes,
     )
 
-    # Step 1: Load data
-    mongo_uri = os.environ.get("MONGO_URI", "")
-    if mongo_uri:
-        from client.mongo_loader import MongoPartitionLoader
-        loader = MongoPartitionLoader(
-            mongo_uri=mongo_uri,
-            partition_id=data_partition,
-            batch_size=32,
-        )
-        data_loader = loader.get_dataloader()
-        logger.info("Data loaded via MongoPartitionLoader: %s", loader)
-    else:
-        leaf_loader = LEAFLoader(dataset, node_index=data_partition, total_nodes=total_nodes, batch_size=32)
-        data_loader = leaf_loader.get_dataloader()
-        logger.info("Data loaded via LEAFLoader (node_index=%d)", data_partition)
+    # Step 1: Initialize data structures (but defer data loading until chunk is assigned)
+    data_loader = None
+    assigned_chunk_id = None
+
 
     # Step 2: Create model
     model = get_model(dataset)
@@ -640,7 +656,29 @@ async def main():
 
     # Callbacks
     async def on_global_model(data: dict):
-        nonlocal current_global_weights, current_global_round
+        nonlocal current_global_weights, current_global_round, data_loader, assigned_chunk_id
+        
+        # Initialize DataLoader if not already done using the server-assigned chunk
+        server_chunk = data.get("assigned_chunk")
+        if data_loader is None and server_chunk is not None:
+            assigned_chunk_id = server_chunk
+            
+            # Re-read from environ to avoid Python scoping closure issues
+            _mongo_uri = os.environ.get("MONGO_URI", "")
+            if _mongo_uri:
+                from client.mongo_loader import MongoPartitionLoader
+                loader = MongoPartitionLoader(
+                    mongo_uri=_mongo_uri,
+                    partition_id=assigned_chunk_id,
+                    batch_size=32,
+                )
+                data_loader = loader.get_dataloader()
+                logger.info("Data loaded via MongoPartitionLoader using assigned chunk %d", assigned_chunk_id)
+            else:
+                leaf_loader = LEAFLoader(dataset, node_index=assigned_chunk_id, total_nodes=total_nodes, batch_size=32)
+                data_loader = leaf_loader.get_dataloader()
+                logger.info("Data loaded via LEAFLoader using assigned chunk %d", assigned_chunk_id)
+        
         weights_b64 = data.get("weights", "")
         new_global = deserialize_weights(weights_b64)
         alpha = data.get("personalization_alpha", 0.0)
@@ -730,10 +768,10 @@ async def main():
             })
 
             logger.info(
-                "%s | %s | Round %d | Loss %.6f | Epsilon %.4f | Samples %d",
-                client_id, dataset, local_round,
+                "[%s] Chunk %d | Round %d | Loss %.6f | Samples %d | Epsilon %.4f",
+                client_id, assigned_chunk_id if assigned_chunk_id is not None else data_partition, local_round,
                 result.get("local_loss", result.get("loss", 0.0)),
-                budget["epsilon"], result["num_samples"],
+                result["num_samples"], budget["epsilon"],
             )
 
             # Wait for new global model or timeout

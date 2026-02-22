@@ -153,12 +153,14 @@ class PrivacyEngine:
         return result
 
     def apply_secure_aggregation_mask(self, weight_diff: dict) -> dict:
-        """Simulates zero-sum masking from Secure Aggregation protocol."""
-        masked = {}
-        for key, val in weight_diff.items():
-            mask = np.random.uniform(-0.001, 0.001, val.shape)
-            masked[key] = val + mask
-        return masked
+        """Simulates zero-sum masking from Secure Aggregation protocol.
+        
+        NOTE: True zero-sum masking requires symmetric key exchange (Diffie-Hellman)
+        which is not yet integrated into the client training loop.
+        Adding uniform noise here is destructive and degrades the global model.
+        For now, this is a pass-through until true Secure Aggregation is active.
+        """
+        return weight_diff
 
     def process(self, weight_diff: dict) -> dict:
         """Full pipeline: clip_and_noise() + apply_secure_aggregation_mask()."""

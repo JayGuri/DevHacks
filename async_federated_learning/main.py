@@ -37,6 +37,7 @@ from server.fl_server import (
 )
 from server.node_registry import NodeRegistry
 from aggregation.aggregator import Aggregator
+from server.chunk_manager import ChunkManager
 from evaluation.metrics import (
     emit_event,
     subscribe_sse,
@@ -58,6 +59,7 @@ fl_buffer: AsyncBuffer = None
 aggregator: Aggregator = None
 network_simulator = None   # NetworkSimulator | None
 node_registry: NodeRegistry = None
+chunk_manager: ChunkManager = None   # MongoDB-backed chunk registry
 # Test DataLoaders for server-side evaluation (loaded once at startup)
 _test_dataloaders: dict = {}   # task -> DataLoader | None
 _eval_device: str = "cpu"
@@ -147,10 +149,22 @@ async def aggregation_callback(updates: list, task: str) -> None:
             "timestamp": latest["timestamp"],
             "personalization_alpha": settings.PERSONALIZATION_ALPHA if settings.PERSONALIZATION_ENABLED else 0.0,
         }
+        # Build trust report to send alongside the global model
+        trust_report_msg = {
+            "type": "trust_report",
+            "task": task,
+            "round": new_round,
+            "trust_scores": result.trust_scores,
+            "staleness_values": staleness_values,
+            "staleness_weights": staleness_weights_map,
+            "rejected_clients": result.rejected_clients,
+            "gatekeeper_rejected": result.gatekeeper_rejected,
+        }
         for cid, client_info in list(connected_clients.items()):
             if client_info.get("task") == task:
                 try:
                     await client_info["websocket"].send_json(global_model_msg)
+                    await client_info["websocket"].send_json(trust_report_msg)
                 except Exception as e:
                     logger.warning("Failed to send global model to %s: %s", cid, e)
 
@@ -213,7 +227,7 @@ async def aggregation_callback(updates: list, task: str) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle handler."""
-    global model_history, fl_buffer, aggregator, _test_dataloaders, network_simulator, node_registry
+    global model_history, fl_buffer, aggregator, _test_dataloaders, network_simulator, node_registry, chunk_manager
 
     logger.info("FedBuff server starting up...")
 
@@ -232,6 +246,24 @@ async def lifespan(app: FastAPI):
         settings.MAX_NODES_PER_TASK,
         len(node_registry.list_nodes()),
     )
+
+    # Step 1b: Initialize ChunkManager (MongoDB-backed chunk tracking)
+    mongo_uri = os.environ.get("MONGO_URI", "")
+    mongo_db = os.environ.get("MONGO_DB", "fedbuff_db")
+    if mongo_uri:
+        chunk_manager = ChunkManager(
+            mongo_uri=mongo_uri,
+            db_name=mongo_db,
+            total_chunks=settings.MAX_NODES_PER_TASK,
+            max_clients=settings.MAX_NODES_PER_TASK,
+        )
+        logger.info(
+            "ChunkManager initialised: total=%d, available=%d",
+            chunk_manager.total_chunks, chunk_manager.available_count,
+        )
+    else:
+        chunk_manager = None
+        logger.info("ChunkManager skipped (MONGO_URI not set) — chunk tracking disabled.")
 
     # Step 2: Instantiate ModelHistory with initial models
     models = {
@@ -262,6 +294,7 @@ async def lifespan(app: FastAPI):
             fl_buffer,
             timeout=settings.CLIENT_HEARTBEAT_TIMEOUT,
             check_interval=settings.HEARTBEAT_CHECK_INTERVAL,
+            chunk_manager=chunk_manager,
         )
     )
 
@@ -353,7 +386,8 @@ async def websocket_fl(
         return
 
     await handle_websocket(websocket, token, task, fl_buffer, model_history, settings,
-                           network_simulator=network_simulator)
+                           network_simulator=network_simulator,
+                           chunk_manager=chunk_manager)
 
 
 # --- REST endpoints ---
@@ -367,11 +401,16 @@ async def health():
             "buffer_size": fl_buffer.size(task) if fl_buffer else 0,
         }
 
-    return {
+    result = {
         "status": "ok",
         "tasks": tasks_info,
         "connected_clients": len(connected_clients),
     }
+
+    if chunk_manager is not None:
+        result["chunks"] = chunk_manager.status_summary
+
+    return result
 
 
 @app.get("/model/latest")
@@ -470,9 +509,45 @@ async def admin_clients(payload: dict = Depends(require_role("server"))):
             "role": info["role"],
             "participant": info["participant"],
             "task": info["task"],
+            "chunk_id": info.get("chunk_id", -1),
             "connected_at": info["connected_at"],
         })
     return {"clients": clients_list, "count": len(clients_list)}
+
+
+@app.get("/chunks/status")
+async def chunks_status():
+    """Return chunk assignment status (available / in_use for each chunk)."""
+    if chunk_manager is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "ChunkManager not initialised (MONGO_URI not set)"},
+        )
+    summary = chunk_manager.status_summary
+    # Add per-chunk detail
+    chunks_detail = []
+    for cid in range(chunk_manager.total_chunks):
+        info = chunk_manager.get_chunk_info(cid)
+        if info:
+            info.pop("_id", None)
+            chunks_detail.append(info)
+    summary["chunks"] = chunks_detail
+    return summary
+
+
+@app.get("/chunks/{chunk_id}")
+async def chunk_detail(chunk_id: int):
+    """Return detailed info for a single chunk."""
+    if chunk_manager is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "ChunkManager not initialised (MONGO_URI not set)"},
+        )
+    info = chunk_manager.get_chunk_info(chunk_id)
+    if info is None:
+        return JSONResponse(status_code=404, content={"error": f"Chunk {chunk_id} not found"})
+    info.pop("_id", None)
+    return info
 
 
 @app.get("/telemetry/stream")
@@ -515,5 +590,5 @@ if __name__ == "__main__":
         log_level=settings.LOG_LEVEL.lower(),
         ws_ping_interval=20,
         ws_ping_timeout=20,
-        ws_max_size=104857600,  # 100MB max message size
+        ws_max_size=2**28,  # 256 MB — compressed weights are much smaller
     )

@@ -22,6 +22,7 @@ from aggregation.staleness import compute_staleness_weights, combine_trust_weigh
 from aggregation.trimmed_mean import trimmed_mean
 from detection.anomaly import check_l2_norm
 from detection.sabd import run_sabd
+from detection.outlier_filter import OutlierFilter
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,86 @@ class Aggregator:
     def __init__(self, strategy: str, config):
         self.strategy = strategy.lower()
         self.config = config
+        self._trust_history = {}
         logger.info("Aggregator initialized: strategy=%s", self.strategy)
+
+    @staticmethod
+    def _clamp01(value: float) -> float:
+        return float(max(0.0, min(1.0, value)))
+
+    def _compute_behavior_trust(self, passed_updates: list, client_ids: list) -> dict:
+        """Compute per-client behavioral trust in [0,1] from update norms.
+
+        Lower robust z-score => higher trust.
+        """
+        if not passed_updates:
+            return {}
+
+        norms = []
+        for u in passed_updates:
+            w = u.get("weights", {})
+            if not w:
+                norms.append(0.0)
+                continue
+            flat = np.concatenate([v.flatten() for v in w.values()])
+            norms.append(float(np.linalg.norm(flat)))
+
+        n_arr = np.array(norms, dtype=float)
+        median = float(np.median(n_arr))
+        mad = float(np.median(np.abs(n_arr - median)))
+        robust_sigma = max(1.4826 * mad, 1e-8)
+
+        trust = {}
+        for cid, norm in zip(client_ids, norms):
+            z = abs(norm - median) / robust_sigma
+            trust[cid] = self._clamp01(1.0 / (1.0 + z))
+        return trust
+
+    def _compose_trust_scores(
+        self,
+        updates: list,
+        current_round: int,
+        staleness_ws: list,
+        behavior_trust: dict,
+        rejected_ids: set,
+        gatekeeper_rejected_ids: set,
+    ) -> dict:
+        """Unified trust score for all strategies.
+
+        trust = EMA( (1-rho)*staleness + rho*behavior )
+        where rho = STALENESS_REPUTATION_WEIGHT.
+        """
+        rho = float(getattr(self.config, 'STALENESS_REPUTATION_WEIGHT', 0.5))
+        rho = self._clamp01(rho)
+        ema_beta = float(getattr(self.config, 'TRUST_EMA_BETA', 0.7))
+        ema_beta = self._clamp01(ema_beta)
+
+        staleness_map = {
+            u.get("client_id", f"c{i}"): float(staleness_ws[i])
+            for i, u in enumerate(updates)
+            if i < len(staleness_ws)
+        }
+
+        trust_scores = {}
+        for i, u in enumerate(updates):
+            cid = u.get("client_id", f"c{i}")
+
+            if cid in gatekeeper_rejected_ids or cid in rejected_ids:
+                trust_scores[cid] = 0.0
+                prev = float(self._trust_history.get(cid, 0.0))
+                self._trust_history[cid] = self._clamp01(prev * 0.5)
+                continue
+
+            stale = float(staleness_map.get(cid, 1.0))
+            behavior = float(behavior_trust.get(cid, 1.0))
+            instant = self._clamp01((1.0 - rho) * stale + rho * behavior)
+
+            prev = float(self._trust_history.get(cid, instant))
+            smoothed = self._clamp01(ema_beta * prev + (1.0 - ema_beta) * instant)
+            self._trust_history[cid] = smoothed
+            trust_scores[cid] = smoothed
+
+        return trust_scores
 
     def aggregate(self, updates: list, current_round: int, task: str) -> AggregationResult:
         """Two-layer defense pipeline:
@@ -160,6 +240,26 @@ class Aggregator:
             result.elapsed_ms = (time.time() - start) * 1000
             return result
 
+        # --- Layer 1.5: Statistical Outlier Filter ---
+        if len(passed_updates) >= 3:
+            outlier_filter = OutlierFilter(method='ensemble')
+            _filtered, accepted_idx, rejected_idx = outlier_filter.filter_updates(
+                [u["weights"] for u in passed_updates],
+                client_ids=[u.get("client_id", f"c{i}") for i, u in enumerate(passed_updates)],
+            )
+            if rejected_idx:
+                for idx in sorted(rejected_idx, reverse=True):
+                    cid = passed_updates[idx].get("client_id", "unknown")
+                    result.rejected_clients.append(cid)
+                    logger.warning(
+                        "OutlierFilter REJECTED client=%s (method=ensemble)", cid,
+                    )
+                passed_updates = [passed_updates[i] for i in accepted_idx]
+            if not passed_updates:
+                logger.warning("All updates rejected by OutlierFilter")
+                result.elapsed_ms = (time.time() - start) * 1000
+                return result
+
         # --- Staleness weights (computed for all strategies, used selectively) ---
         staleness_ws = compute_staleness_weights(
             passed_updates,
@@ -180,6 +280,7 @@ class Aggregator:
         # --- Layer 2: Strategy-specific aggregation ---
         weight_dicts = [u["weights"] for u in passed_updates]
         client_ids = [u.get("client_id", "unknown") for u in passed_updates]
+        behavior_trust = self._compute_behavior_trust(passed_updates, client_ids)
 
         if self.strategy == "krum":
             sabd_result = run_sabd(
@@ -189,7 +290,22 @@ class Aggregator:
             selected_updates = [weight_dicts[i] for i in sabd_result.selected_indices]
             result.accepted_clients = [client_ids[i] for i in sabd_result.selected_indices]
             result.rejected_clients = [client_ids[i] for i in sabd_result.rejected_indices]
-            result.trust_scores = sabd_result.trust_scores
+
+            if sabd_result.krum_scores:
+                krum_scores = {
+                    cid: float(sabd_result.krum_scores[cid])
+                    for cid in client_ids
+                    if cid in sabd_result.krum_scores
+                }
+                if krum_scores:
+                    vals = list(krum_scores.values())
+                    lo, hi = min(vals), max(vals)
+                    if hi > lo:
+                        for cid, score in krum_scores.items():
+                            krum_trust = 1.0 - ((score - lo) / (hi - lo))
+                            behavior_trust[cid] = self._clamp01(
+                                0.5 * behavior_trust.get(cid, 1.0) + 0.5 * krum_trust
+                            )
             if selected_updates:
                 result.aggregated_weights = fedavg(selected_updates)
         elif self.strategy == "trimmed_mean":
@@ -205,9 +321,10 @@ class Aggregator:
             result.aggregated_weights = fedavg(weight_dicts, weights=sample_weights)
             result.accepted_clients = client_ids
         elif self.strategy == "staleness_aware":
-            rep_weights = result.metadata.get("reputation_weights")
-            if rep_weights is None:
-                rep_weights = [1.0 / len(passed_updates)] * len(passed_updates)
+            rep_weights = [
+                max(0.01, behavior_trust.get(cid, 1.0))
+                for cid in client_ids
+            ]
             sample_counts = [u.get("num_samples", 1) for u in passed_updates]
             rep_blend = getattr(self.config, 'STALENESS_REPUTATION_WEIGHT', 0.5)
             combined_weights = combine_trust_weights(
@@ -220,14 +337,44 @@ class Aggregator:
             else:
                 result.aggregated_weights = fedavg(weight_dicts, weights=combined_weights)
             result.accepted_clients = client_ids
-            result.trust_scores = {
+            result.metadata["reputation_weights"] = {
                 cid: round(w, 4)
-                for cid, w in zip(client_ids, staleness_ws)
+                for cid, w in zip(client_ids, rep_weights)
+            }
+        elif self.strategy == "reputation":
+            rep_weights = [
+                max(0.01, behavior_trust.get(cid, 1.0))
+                for cid in client_ids
+            ]
+            sample_counts = [u.get("num_samples", 1) for u in passed_updates]
+            rep_blend = getattr(self.config, 'STALENESS_REPUTATION_WEIGHT', 0.5)
+            combined_weights = combine_trust_weights(
+                staleness_ws, rep_weights, sample_counts, rep_blend=rep_blend
+            )
+            total = sum(combined_weights)
+            if total <= 0:
+                logger.warning("reputation: combined weights sum to zero, falling back to fedavg")
+                result.aggregated_weights = fedavg(weight_dicts)
+            else:
+                result.aggregated_weights = fedavg(weight_dicts, weights=combined_weights)
+            result.accepted_clients = client_ids
+            result.metadata["reputation_weights"] = {
+                cid: round(w, 4)
+                for cid, w in zip(client_ids, rep_weights)
             }
         else:
             logger.warning("Unknown strategy '%s', falling back to fedavg", self.strategy)
             result.aggregated_weights = fedavg(weight_dicts)
             result.accepted_clients = client_ids
+
+        result.trust_scores = self._compose_trust_scores(
+            updates=updates,
+            current_round=current_round,
+            staleness_ws=staleness_ws,
+            behavior_trust=behavior_trust,
+            rejected_ids=set(result.rejected_clients),
+            gatekeeper_rejected_ids=set(result.gatekeeper_rejected),
+        )
 
         result.elapsed_ms = (time.time() - start) * 1000
         logger.info(

@@ -46,21 +46,22 @@ def verify_token(token: str) -> dict:
 
 
 def register_client(client_id: str, websocket, role: str, display_name: str,
-                     participant: str, task: str) -> None:
-    """Register a client connection."""
+                     participant: str, task: str, chunk_id: int = -1) -> None:
+    """Register a client connection with optional chunk assignment."""
     connected_clients[client_id] = {
         "websocket": websocket,
         "role": role,
         "display_name": display_name,
         "participant": participant,
         "task": task,
+        "chunk_id": chunk_id,
         "connected_at": time.time(),
         "last_heartbeat": time.time(),
         "is_joining": True,   # grace period until first weight_update received
     }
     logger.info(
-        "Client registered: %s (%s) participant=%s task=%s",
-        client_id, display_name, participant, task,
+        "Client registered: %s (%s) participant=%s task=%s chunk=%d",
+        client_id, display_name, participant, task, chunk_id,
     )
 
 
@@ -102,13 +103,15 @@ async def heartbeat_checker(
     buffer: "AsyncBuffer",
     timeout: float = 60.0,
     check_interval: float = 10.0,
+    chunk_manager=None,
 ) -> None:
     """Periodic task: scans connected_clients for stale entries.
 
     If a client's last_heartbeat is older than `timeout` seconds:
       1. Remove from buffer's _queued_clients (prevent permanent block)
-      2. Deregister from connected_clients
-      3. Emit client_timeout SSE event
+      2. Release assigned chunk via ChunkManager (if available)
+      3. Deregister from connected_clients
+      4. Emit client_timeout SSE event
     """
     from evaluation.metrics import emit_event
 
@@ -132,6 +135,16 @@ async def heartbeat_checker(
             )
             if task and task in buffer._queued_clients:
                 buffer._queued_clients[task].discard(client_id)
+
+            # Release chunk on timeout (same as disconnect)
+            if chunk_manager is not None:
+                released = chunk_manager.release_chunk(client_id)
+                if released is not None:
+                    logger.info(
+                        "[SERVER] Timeout: %s → chunk_%d released → available again",
+                        client_id, released,
+                    )
+
             deregister_client(client_id)
             asyncio.create_task(emit_event("client_timeout", {
                 "client_id": client_id,
@@ -371,8 +384,15 @@ async def handle_websocket(
     model_history,
     config,
     network_simulator=None,
+    chunk_manager=None,
 ) -> None:
-    """Full WebSocket session handler for one client connection."""
+    """Full WebSocket session handler for one client connection.
+
+    When *chunk_manager* is provided the handler will:
+      1. Atomically assign an available data chunk to this client.
+      2. Log structured chunk-assignment / per-round messages.
+      3. Release the chunk in the ``finally`` block (disconnect / crash).
+    """
     from evaluation.metrics import emit_event
 
     # Step 1: Verify token
@@ -393,8 +413,42 @@ async def handle_websocket(
         await websocket.close(code=1008, reason=f"Unsupported task: {task}")
         return
 
-    # Step 3: Register client
-    register_client(client_id, websocket, role, display_name, participant, task)
+    # Step 2b: Chunk assignment (if ChunkManager available)
+    assigned_chunk = -1
+    if chunk_manager is not None:
+        success, assigned_chunk, msg = chunk_manager.assign_chunk(
+            client_id=client_id, dataset=task,
+        )
+        if not success:
+            logger.warning(
+                "[SERVER] Chunk assignment failed for %s: %s", client_id, msg,
+            )
+            await websocket.close(code=1008, reason=msg)
+            return
+        # Log chunk load details (sample_count filled later by client/loader)
+        chunk_info = chunk_manager.get_chunk_info(assigned_chunk)
+        if chunk_info:
+            logger.info(
+                "[SERVER] Chunk %d loaded from MongoDB: %d samples (%s)",
+                assigned_chunk,
+                chunk_info.get("sample_count", 0),
+                chunk_info.get("dataset", task),
+            )
+            logger.info(
+                "[SERVER] Chunk %d: %d samples, classes=%s, loaded_from=%s",
+                assigned_chunk,
+                chunk_info.get("sample_count", 0),
+                chunk_info.get("classes", []),
+                chunk_info.get("loaded_from", "mongodb"),
+            )
+        # Duplicate validation
+        dup_errors = chunk_manager.validate_no_duplicates()
+        for err in dup_errors:
+            logger.error("[SERVER] %s", err)
+
+    # Step 3: Register client (with chunk_id)
+    register_client(client_id, websocket, role, display_name, participant, task,
+                    chunk_id=assigned_chunk)
 
     # Step 4: Emit client_joined event
     await emit_event("client_joined", {
@@ -402,10 +456,11 @@ async def handle_websocket(
         "participant": participant,
         "task": task,
         "display_name": display_name,
+        "chunk_id": assigned_chunk,
     })
 
     try:
-        # Step 5: Send current global model for this task
+        # Step 5: Send current global model for this task (include chunk assignment)
         latest = model_history.get_latest(task)
         await websocket.send_json({
             "type": "global_model",
@@ -414,10 +469,11 @@ async def handle_websocket(
             "weights": latest["weights"],
             "version": latest["version"],
             "timestamp": latest["timestamp"],
+            "assigned_chunk": assigned_chunk,
         })
         logger.info(
-            "Sent global model to %s: task=%s, round=%d",
-            client_id, task, latest["round"],
+            "Sent global model to %s: task=%s, round=%d, chunk=%d",
+            client_id, task, latest["round"], assigned_chunk,
         )
 
         # Message dispatch loop
@@ -487,7 +543,16 @@ async def handle_websocket(
                             "num_samples": num_samples,
                             "local_loss": local_loss,
                             "timestamp": timestamp,
+                            "chunk_id": assigned_chunk,
                         }
+
+                        # ── Per-round chunk log ──
+                        privacy_epsilon = privacy_budget.get("epsilon", 0.0) if isinstance(privacy_budget, dict) else 0.0
+                        logger.info(
+                            "[%s] Chunk %d | Round %d | Loss %.4f | Samples %d | Epsilon %.4f",
+                            client_id, assigned_chunk, round_num,
+                            local_loss, num_samples, privacy_epsilon,
+                        )
 
                         # Network simulation (if enabled)
                         if network_simulator is not None:
@@ -537,13 +602,37 @@ async def handle_websocket(
     except Exception as e:
         logger.info("WebSocket disconnected: %s (%s)", client_id, e)
     finally:
+        # Prevent a stale/duplicate connection that drops from releasing the chunk
+        # of the actively registered connection.
+        is_active_connection = (
+            client_id in connected_clients and
+            connected_clients[client_id].get("websocket") == websocket
+        )
+
         # Remove from buffer's pending set to prevent permanent block on reconnect
         if task in buffer._queued_clients:
             buffer._queued_clients[task].discard(client_id)
-        deregister_client(client_id)
-        await emit_event("client_left", {
-            "client_id": client_id,
-            "participant": participant,
-            "task": task,
-        })
-        logger.info("Client disconnected: %s (task=%s)", client_id, task)
+
+        # ── Release chunk back to available pool ──
+        released_chunk = None
+        if chunk_manager is not None and is_active_connection:
+            released_chunk = chunk_manager.release_chunk(client_id)
+            if released_chunk is not None:
+                logger.info(
+                    "[SERVER] %s disconnected → chunk_%d released → available again",
+                    client_id, released_chunk,
+                )
+
+        if is_active_connection:
+            deregister_client(client_id)
+            await emit_event("client_left", {
+                "client_id": client_id,
+                "participant": participant,
+                "task": task,
+                "chunk_released": released_chunk,
+            })
+            logger.info("Client disconnected: %s (task=%s, chunk_released=%s)",
+                         client_id, task, released_chunk)
+        else:
+            logger.info("Duplicate connection dropped for %s (chunk and registration maintained for active connection)", client_id)
+

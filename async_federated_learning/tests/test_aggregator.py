@@ -188,6 +188,33 @@ class TestAggregatorPipeline:
         # Verify she's not in accepted clients
         assert "mallory" not in result.accepted_clients
 
+    def test_unified_trust_score_penalizes_staleness(self):
+        """Trust scoring should be continuous and staleness-aware for all strategies."""
+        np.random.seed(7)
+        shapes = {"layer.weight": (16, 8), "layer.bias": (16,)}
+
+        fresh = make_update("fresh", scale=0.01, shapes=shapes)
+        stale = make_update("stale", scale=0.01, shapes=shapes)
+
+        fresh["global_round_received"] = 10
+        stale["global_round_received"] = 3
+
+        config = Settings(
+            AGGREGATION_STRATEGY="fedavg",
+            STALENESS_DECAY_FN="polynomial",
+            STALENESS_REPUTATION_WEIGHT=0.5,
+            L2_NORM_THRESHOLD=500.0,
+        )
+        aggregator = Aggregator(strategy="fedavg", config=config)
+
+        result = aggregator.aggregate([fresh, stale], current_round=10, task="femnist")
+
+        assert "fresh" in result.trust_scores
+        assert "stale" in result.trust_scores
+        assert 0.0 <= result.trust_scores["fresh"] <= 1.0
+        assert 0.0 <= result.trust_scores["stale"] <= 1.0
+        assert result.trust_scores["stale"] < result.trust_scores["fresh"]
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
