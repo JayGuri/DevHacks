@@ -5,6 +5,7 @@ import { ThemeProvider } from "next-themes";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/contexts/AuthContext";
+import ClickSpark from "@/components/ui/ClickSpark";
 import App from "./App";
 import "./index.css";
 
@@ -14,7 +15,15 @@ ReactDOM.createRoot(document.getElementById("root")).render(
       <BrowserRouter>
         <TooltipProvider delayDuration={300}>
           <AuthProvider>
-            <App />
+            <ClickSpark
+              sparkColor='#fff'
+              sparkSize={10}
+              sparkRadius={15}
+              sparkCount={8}
+              duration={400}
+            >
+              <App />
+            </ClickSpark>
           </AuthProvider>
         </TooltipProvider>
         <Toaster richColors position="bottom-right" />
