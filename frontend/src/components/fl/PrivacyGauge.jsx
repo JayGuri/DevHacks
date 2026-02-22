@@ -2,12 +2,6 @@ import { motion } from "framer-motion";
 import { formatEpsilon } from "@/lib/utils";
 import AnimatedNumber from "@/components/ui/AnimatedNumber";
 import { fadeInUp } from "@/lib/animations";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 
 function epsilonColor(eps) {
   if (eps < 3) return "text-emerald-500";
@@ -88,7 +82,7 @@ function StatRow({ label, value }) {
   );
 }
 
-export default function PrivacyGauge({ latestRound, viewMode }) {
+export default function PrivacyGauge({ latestRound }) {
   const epsilon = latestRound?.epsilonSpent || 0;
   const color = epsilonColor(epsilon);
 
@@ -99,51 +93,28 @@ export default function PrivacyGauge({ latestRound, viewMode }) {
       animate="visible"
       className="min-w-0"
     >
-      {viewMode === "simple" ? (
-        <TooltipProvider delayDuration={300}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="flex cursor-default flex-col items-center gap-1">
-                <span className={`metric-value ${color}`}>
-                  <AnimatedNumber value={epsilon} decimals={1} prefix="ε " />
-                </span>
-                <span className="metric-label text-muted-foreground">
-                  Privacy Budget Consumed
-                </span>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs text-center">
-              <p>
-                ε (epsilon) measures privacy cost. Below 3 is safe. Above 6
-                means significant risk.
-              </p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      ) : (
-        <div className="space-y-4">
-          <div className="flex flex-col items-center gap-1">
-            <span className={`metric-value ${color}`}>
-               <AnimatedNumber value={epsilon} decimals={1} prefix="ε " />
-            </span>
-            <span className="metric-label text-muted-foreground">
-              Privacy Budget Consumed
-            </span>
-          </div>
-
-          <ArcGauge epsilon={epsilon} />
-
-          <div className="space-y-2 rounded-lg border border-border p-3">
-            <StatRow label="σ Noise Multiplier" value="0.1" />
-            <StatRow label="C Clip Norm" value="1.0" />
-            <StatRow
-              label="DP Batches"
-              value={((latestRound?.round || 0) * 12).toString()}
-            />
-            <StatRow label="Budget Status" value={budgetStatus(epsilon)} />
-          </div>
+      <div className="space-y-4">
+        <div className="flex flex-col items-center gap-1">
+          <span className={`metric-value ${color}`}>
+            <AnimatedNumber value={epsilon} decimals={1} prefix="ε " />
+          </span>
+          <span className="metric-label text-muted-foreground">
+            Privacy Budget Consumed
+          </span>
         </div>
-      )}
+
+        <ArcGauge epsilon={epsilon} />
+
+        <div className="space-y-2 rounded-lg border border-border p-3">
+          <StatRow label="σ Noise Multiplier" value="0.1" />
+          <StatRow label="C Clip Norm" value="1.0" />
+          <StatRow
+            label="DP Batches"
+            value={((latestRound?.round || 0) * 12).toString()}
+          />
+          <StatRow label="Budget Status" value={budgetStatus(epsilon)} />
+        </div>
+      </div>
     </motion.div>
   );
 }

@@ -23,51 +23,48 @@ const statusBadge = (status) => {
     BYZANTINE: "badge-byzantine",
     BLOCKED: "badge-blocked",
   };
+  return <span className={cn(map[status] || "badge-custom")}>{status}</span>;
+};
+
+const typeLabel = (node) => {
+  if (node.isByzantine)
+    return (
+      <span className="text-rose-500 font-mono text-[11px] font-bold">
+        BYZANTINE
+      </span>
+    );
+  if (node.isSlow)
+    return (
+      <span className="text-amber-500 font-mono text-[11px] font-bold">
+        SLOW
+      </span>
+    );
   return (
-    <span className={cn(map[status] || "badge-custom")}>
-      {status}
+    <span className="text-emerald-500 font-mono text-[11px] font-bold">
+      HONEST
     </span>
   );
 };
 
-const typeLabel = (node) => {
-  if (node.isByzantine) return <span className="text-rose-500 font-mono text-[11px] font-bold">BYZANTINE</span>;
-  if (node.isSlow) return <span className="text-amber-500 font-mono text-[11px] font-bold">SLOW</span>;
-  return <span className="text-emerald-500 font-mono text-[11px] font-bold">HONEST</span>;
-};
-
 const trustIndicatorClass = (trust) => {
-  if (trust >= 0.7) return "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]";
+  if (trust >= 0.7)
+    return "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]";
   if (trust >= 0.4) return "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.4)]";
   return "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]";
 };
 
 const filterNodes = (nodes, filter) => {
   if (filter === "All") return nodes;
-  if (filter === "Honest") return nodes.filter((n) => !n.isByzantine && !n.isSlow && !n.isBlocked);
+  if (filter === "Honest")
+    return nodes.filter((n) => !n.isByzantine && !n.isSlow && !n.isBlocked);
   if (filter === "Slow") return nodes.filter((n) => n.isSlow && !n.isBlocked);
-  if (filter === "Byzantine") return nodes.filter((n) => n.isByzantine && !n.isBlocked);
+  if (filter === "Byzantine")
+    return nodes.filter((n) => n.isByzantine && !n.isBlocked);
   if (filter === "Blocked") return nodes.filter((n) => n.isBlocked);
   return nodes;
 };
 
-const StatPill = memo(({ color, count, label }) => (
-  <div className="flex items-center gap-3 rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm px-4 py-2 card-elevated">
-    <div className={cn("h-2 w-2 rounded-full animate-pulse", color)} />
-    <div className="flex flex-col">
-      <span className="metric-value text-xl leading-none">{count}</span>
-      <span className="metric-label opacity-60 mt-1">{label}</span>
-    </div>
-  </div>
-));
-
-const NodeMatrix = memo(({
-  nodes,
-  viewMode,
-  isAdmin,
-  onBlock,
-  onUnblock,
-}) => {
+const NodeMatrix = memo(({ isAdmin, onBlock, onUnblock }) => {
   const [filter, setFilter] = useState("All");
 
   const counts = {
@@ -85,63 +82,54 @@ const NodeMatrix = memo(({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
     >
-      {viewMode === "simple" ? (
-        <div className="flex flex-wrap gap-4">
-          <StatPill color="bg-emerald-500" count={counts.active} label="Active" />
-          <StatPill color="bg-amber-500" count={counts.slow} label="Slow" />
-          <StatPill color="bg-rose-500" count={counts.byzantine} label="Byzantine" />
-          <StatPill color="bg-muted-foreground" count={counts.blocked} label="Blocked" />
-        </div>
-      ) : (
-        <>
-          <div className="mb-6 flex flex-wrap gap-2">
-            {FILTERS.map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={cn(
-                  "rounded-full px-4 py-1.5 text-[11px] font-mono tracking-wider uppercase transition-all duration-200 border",
-                  filter === f
-                    ? "bg-primary text-primary-foreground border-primary shadow-lg shadow-primary/20"
-                    : "bg-card text-muted-foreground border-border hover:border-primary/50"
-                )}
-              >
-                {f}
-              </button>
-            ))}
-          </div>
+      <div className="mb-6 flex flex-wrap gap-2">
+        {FILTERS.map((f) => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={cn(
+              "rounded-full px-4 py-1.5 text-[11px] font-mono tracking-wider uppercase transition-all duration-200 border",
+              filter === f ?
+                "bg-primary text-primary-foreground border-primary shadow-lg shadow-primary/20"
+              : "bg-card text-muted-foreground border-border hover:border-primary/50",
+            )}
+          >
+            {f}
+          </button>
+        ))}
+      </div>
 
-          <div className="card-base overflow-x-auto">
-            <Table>
-              <TableHeader className="table-header">
-                <TableRow>
-                  <TableHead>Node ID</TableHead>
-                  <TableHead>Entity Type</TableHead>
-                  <TableHead>Reputation Trust</TableHead>
-                  <TableHead>Cos. Entropy</TableHead>
-                  <TableHead>Staleness</TableHead>
-                  <TableHead>Operational Status</TableHead>
-                  {isAdmin && <TableHead className="text-right">Orchestration</TableHead>}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                <AnimatePresence initial={false} mode="popLayout">
-                  {filtered.map((node, index) => (
-                    <NodeRow
-                      key={node.nodeId}
-                      node={node}
-                      index={index}
-                      isAdmin={isAdmin}
-                      onBlock={onBlock}
-                      onUnblock={onUnblock}
-                    />
-                  ))}
-                </AnimatePresence>
-              </TableBody>
-            </Table>
-          </div>
-        </>
-      )}
+      <div className="card-base overflow-x-auto">
+        <Table>
+          <TableHeader className="table-header">
+            <TableRow>
+              <TableHead>Node ID</TableHead>
+              <TableHead>Entity Type</TableHead>
+              <TableHead>Reputation Trust</TableHead>
+              <TableHead>Cos. Entropy</TableHead>
+              <TableHead>Staleness</TableHead>
+              <TableHead>Operational Status</TableHead>
+              {isAdmin && (
+                <TableHead className="text-right">Orchestration</TableHead>
+              )}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            <AnimatePresence initial={false} mode="popLayout">
+              {filtered.map((node, index) => (
+                <NodeRow
+                  key={node.nodeId}
+                  node={node}
+                  index={index}
+                  isAdmin={isAdmin}
+                  onBlock={onBlock}
+                  onUnblock={onUnblock}
+                />
+              ))}
+            </AnimatePresence>
+          </TableBody>
+        </Table>
+      </div>
     </motion.div>
   );
 });
@@ -177,7 +165,7 @@ const NodeRow = memo(({ node, index, isAdmin, onBlock, onUnblock }) => {
         node.isByzantine && !node.isBlocked && "bg-rose-500/[0.02]",
         node.isBlocked && "opacity-40 grayscale",
         flashClass,
-        statusPulse
+        statusPulse,
       )}
     >
       <TableCell className="mono-data font-bold text-primary/80">
@@ -189,7 +177,10 @@ const NodeRow = memo(({ node, index, isAdmin, onBlock, onUnblock }) => {
           <Progress
             value={node.trust * 100}
             className="h-1 bg-muted rounded-full overflow-hidden"
-            indicatorClassName={cn("transition-all duration-500", trustIndicatorClass(node.trust))}
+            indicatorClassName={cn(
+              "transition-all duration-500",
+              trustIndicatorClass(node.trust),
+            )}
           />
           <div className="mono-data text-[10px] text-muted-foreground flex justify-between items-center pr-2">
             <span>SCORE</span>
@@ -200,9 +191,9 @@ const NodeRow = memo(({ node, index, isAdmin, onBlock, onUnblock }) => {
       <TableCell
         className={cn(
           "mono-data text-xs font-semibold",
-          node.cosineDistance > 0.45
-            ? "text-rose-500"
-            : "text-muted-foreground opacity-80"
+          node.cosineDistance > 0.45 ?
+            "text-rose-500"
+          : "text-muted-foreground opacity-80",
         )}
       >
         <AnimatedNumber value={node.cosineDistance} decimals={4} />
@@ -222,10 +213,14 @@ const NodeRow = memo(({ node, index, isAdmin, onBlock, onUnblock }) => {
       </TableCell>
       {isAdmin && (
         <TableCell className="text-right">
-          {node.isBlocked ? (
+          {node.isBlocked ?
             <ConfirmDialog
               trigger={
-                <Button size="sm" variant="ghost" className="h-8 text-[11px] metric-label text-cyan-600 hover:text-cyan-700 hover:bg-cyan-500/10 rounded-full">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 text-[11px] metric-label text-cyan-600 hover:text-cyan-700 hover:bg-cyan-500/10 rounded-full"
+                >
                   Unblock Entity
                 </Button>
               }
@@ -234,10 +229,13 @@ const NodeRow = memo(({ node, index, isAdmin, onBlock, onUnblock }) => {
               actionLabel="Confirm Restore"
               onConfirm={() => onUnblock(node.nodeId)}
             />
-          ) : (
-            <ConfirmDialog
+          : <ConfirmDialog
               trigger={
-                <Button size="sm" variant="outline" className="h-8 text-[11px] metric-label border-rose-500/20 text-rose-600 hover:bg-rose-500/5 rounded-full px-4">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-[11px] metric-label border-rose-500/20 text-rose-600 hover:bg-rose-500/5 rounded-full px-4"
+                >
                   Sanction Node
                 </Button>
               }
@@ -247,7 +245,7 @@ const NodeRow = memo(({ node, index, isAdmin, onBlock, onUnblock }) => {
               variant="destructive"
               onConfirm={() => onBlock(node.nodeId)}
             />
-          )}
+          }
         </TableCell>
       )}
     </motion.tr>

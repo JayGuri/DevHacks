@@ -1,5 +1,6 @@
 import { useMemo, useEffect } from "react";
 import { Link } from "react-router-dom";
+import { useFeatureGate } from "@/hooks/useFeatureGate";
 import {
   LineChart,
   Line,
@@ -9,7 +10,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { Layers, Server, ShieldAlert, TrendingUp, Lock } from "lucide-react";
+import { Layers, Server, ShieldAlert, TrendingUp, Lock, LockKeyhole } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { USE_MOCK } from "@/lib/config";
 import { apiListProjects } from "@/lib/api";
@@ -32,6 +33,7 @@ const PROJECT_COLORS = ["#06b6d4", "#f59e0b", "#10b981"];
 
 export default function AdminOverview() {
   const store = useStore();
+  const { canViewDeepTelemetry } = useFeatureGate();
   const viewMode = store.viewMode;
   const nodesByProject = store.nodesByProject;
   const roundsByProject = store.roundsByProject;
@@ -265,57 +267,78 @@ export default function AdminOverview() {
         </Card>
       </div>
 
-      {/* SABD summary */}
+      {/* SABD summary — Pro-only deep telemetry */}
       <h3 className="mb-3 font-display text-lg font-semibold">
         SABD Performance
       </h3>
-      <div className="mb-4 grid grid-cols-2 gap-4">
-        <StatCard
-          label="Avg FPR"
-          value={formatPercent(avgFPR * 100)}
-          color={avgFPR > 0.3 ? "text-rose-500" : "text-emerald-500"}
-        />
-        <StatCard
-          label="Avg Recall"
-          value={formatPercent(avgRecall * 100)}
-          color="text-emerald-500"
-        />
-      </div>
+      {canViewDeepTelemetry ? (
+        <>
+          <div className="mb-4 grid grid-cols-2 gap-4">
+            <StatCard
+              label="Avg FPR"
+              value={formatPercent(avgFPR * 100)}
+              color={avgFPR > 0.3 ? "text-rose-500" : "text-emerald-500"}
+            />
+            <StatCard
+              label="Avg Recall"
+              value={formatPercent(avgRecall * 100)}
+              color="text-emerald-500"
+            />
+          </div>
 
-      {byzantineNodes.length > 0 && (
-        <div className="overflow-x-auto rounded-md border border-border min-w-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Node</TableHead>
-                <TableHead>Project</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Trust</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {byzantineNodes.map((n) => (
-                <TableRow
-                  key={`byz-${n.projectId}-${n.nodeId}`}
-                  className="bg-rose-500/5"
-                >
-                  <TableCell className="mono-data">{n.displayId}</TableCell>
-                  <TableCell>{n.projectName}</TableCell>
-                  <TableCell>
-                    <Badge
-                      variant="outline"
-                      className="border-rose-500 text-rose-500"
+          {byzantineNodes.length > 0 && (
+            <div className="overflow-x-auto rounded-md border border-border min-w-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Node</TableHead>
+                    <TableHead>Project</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Trust</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {byzantineNodes.map((n) => (
+                    <TableRow
+                      key={`byz-${n.projectId}-${n.nodeId}`}
+                      className="bg-rose-500/5"
                     >
-                      {n.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="mono-data text-rose-500">
-                    {formatPercent(n.trust * 100)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+                      <TableCell className="mono-data">{n.displayId}</TableCell>
+                      <TableCell>{n.projectName}</TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className="border-rose-500 text-rose-500"
+                        >
+                          {n.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="mono-data text-rose-500">
+                        {formatPercent(n.trust * 100)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-amber-500/40 bg-amber-500/5 py-10 text-center">
+          <LockKeyhole size={28} className="mb-3 text-amber-500/60" />
+          <p className="font-semibold text-amber-600 dark:text-amber-400">
+            Deep Telemetry — Pro Feature
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            SABD detection metrics, FPR/recall tracking, and the Byzantine node
+            table require a Pro subscription.
+          </p>
+          <Link
+            to="/admin/billing"
+            className="mt-4 inline-flex items-center gap-1 rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600"
+          >
+            Upgrade to Pro
+          </Link>
         </div>
       )}
     </AppLayout>

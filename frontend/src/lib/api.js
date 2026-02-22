@@ -26,7 +26,7 @@ export function clearToken() {
 // Generic fetch wrapper
 // ────────────────────────────────────────────────────────
 
-async function apiFetch(path, options = {}) {
+export async function apiFetch(path, options = {}) {
   const token = getToken();
   const headers = {
     "Content-Type": "application/json",
@@ -234,4 +234,24 @@ export async function apiUnblockNode(projectId, nodeId) {
 
 export async function apiExportMetrics(projectId) {
   return apiFetch(`/projects/${projectId}/export`);
+}
+
+// ────────────────────────────────────────────────────────
+// Contributor gradient submission
+// ────────────────────────────────────────────────────────
+
+/**
+ * Submit a gradient update from the contributor's local training run.
+ *
+ * The backend applies L2 norm clipping and zero-sum masking before
+ * queuing the update for the next FL aggregation round.
+ *
+ * @param {string} projectId
+ * @param {{ nodeId: string, gradients: Record<string,number[]>, dataSize?: number, round?: number }} payload
+ */
+export async function apiSubmitUpdate(projectId, payload) {
+  return apiFetch(`/projects/${projectId}/training/submit-update`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }

@@ -30,14 +30,16 @@ export default function AppLayout({ children, pageHeader }) {
   return (
     <div className="flex">
       <Sidebar />
-      <div className="flex min-h-screen flex-1 flex-col lg:ml-60 min-w-0">
+      <div className="flex min-h-screen flex-1 flex-col lg:ml-64 min-w-0">
         <TopNav breadcrumbs={breadcrumbs} />
         {pageHeader && (
           <div className="pt-14">
             <PageHeader {...pageHeader} />
           </div>
         )}
-        <main className={`flex-1 p-6 pb-24 lg:pb-6 ${pageHeader ? "pt-4" : "pt-20"}`}>
+        <main
+          className={`flex-1 p-6 pb-24 lg:pb-6 ${pageHeader ? "pt-4" : "pt-20"}`}
+        >
           {children}
         </main>
       </div>

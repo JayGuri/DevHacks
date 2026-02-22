@@ -14,12 +14,14 @@ import {
   Layers,
   CheckCircle,
   XCircle,
+  Send,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import { useStore } from "@/lib/store";
 import useFL from "@/hooks/useFL";
 import useContributorStats from "@/hooks/useContributorStats";
+import { useFeatureGate } from "@/hooks/useFeatureGate";
 import { formatPercent, getTrustColor, cn } from "@/lib/utils";
 import {
   isProjectLead,
@@ -36,6 +38,7 @@ import ConvergenceChart from "@/components/fl/ConvergenceChart";
 import GanttTimeline from "@/components/fl/GanttTimeline";
 import PrivacyGauge from "@/components/fl/PrivacyGauge";
 import SABDPanel from "@/components/fl/SABDPanel";
+import ContributorWorkspace from "@/components/fl/ContributorWorkspace";
 import ControlPanel from "@/components/admin/ControlPanel";
 import NetworkTopology from "@/components/fl/NetworkTopology";
 import PageSkeleton from "@/components/dashboard/PageSkeleton";
@@ -63,7 +66,8 @@ import {
 } from "@/components/ui/select";
 
 const SESSION_KEY = (id) => `tab-${id}-project-detail`;
-const VALID_TABS = ["mynode", "server", "admin"];
+// "workspace" is contributor-only; "server"/"admin" are team-lead-only
+const VALID_TABS = ["mynode", "server", "admin", "workspace"];
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -73,14 +77,29 @@ export default function ProjectDetail() {
   const viewMode = store.viewMode;
   const fl = useFL(id);
   const stats = useContributorStats(currentUser?.id, id);
+  const { isTeamLead } = useFeatureGate();
 
   const amLead = isProjectLead(currentUser?.id, id, store);
 
   const urlTab = searchParams.get("tab");
   const savedTab = sessionStorage.getItem(SESSION_KEY(id));
-  const defaultTab =
+  const rawTab =
     (urlTab && VALID_TABS.includes(urlTab) ? urlTab : null) ||
-    (savedTab && VALID_TABS.includes(savedTab) ? savedTab : "mynode");
+    (savedTab && VALID_TABS.includes(savedTab) ? savedTab
+    : isTeamLead ? "mynode"
+    : "workspace");
+
+  // Enforce role-based tab access: contributors → workspace only; leads → mynode/server/admin
+  const defaultTab = (() => {
+    if ((rawTab === "workspace" || rawTab === "contribute") && isTeamLead)
+      return "mynode";
+    if (
+      (rawTab === "server" || rawTab === "admin" || rawTab === "mynode") &&
+      !isTeamLead
+    )
+      return "workspace";
+    return rawTab;
+  })();
 
   function handleTabChange(value) {
     sessionStorage.setItem(SESSION_KEY(id), value);
@@ -160,8 +179,18 @@ export default function ProjectDetail() {
     >
       <Tabs value={defaultTab} onValueChange={handleTabChange}>
         <TabsList className="mb-4">
-          <TabsTrigger value="mynode">My Node</TabsTrigger>
-          <TabsTrigger value="server">Server Metrics</TabsTrigger>
+          {/* Team leads get My Node + Server Metrics + Admin */}
+          {isTeamLead && <TabsTrigger value="mynode">My Node</TabsTrigger>}
+          {/* Contributors get a single unified Workspace tab */}
+          {!isTeamLead && (
+            <TabsTrigger value="workspace" className="gap-1.5">
+              <Send size={12} />
+              My Workspace
+            </TabsTrigger>
+          )}
+          {isTeamLead && (
+            <TabsTrigger value="server">Server Metrics</TabsTrigger>
+          )}
           {amLead && <TabsTrigger value="admin">Project Admin</TabsTrigger>}
         </TabsList>
 
@@ -173,8 +202,8 @@ export default function ProjectDetail() {
             animate="visible"
             exit="hidden"
           >
-            {/* My Node */}
-            {defaultTab === "mynode" && (
+            {/* ── My Node — Team Lead view (full trust + cluster data) ── */}
+            {defaultTab === "mynode" && isTeamLead && (
               <div className="space-y-6">
                 <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                   <StatCard
@@ -283,19 +312,34 @@ export default function ProjectDetail() {
               </div>
             )}
 
-            {/* Server Metrics (read-only) */}
-            {defaultTab === "server" && (
+            {/* ── My Workspace — Contributor only ── */}
+            {defaultTab === "workspace" && !isTeamLead && (
+              <ContributorWorkspace
+                projectId={id}
+                nodeId={stats.myNode?.nodeId ?? stats.myNode?.displayId}
+                trainingStatus={fl.trainingStatus}
+                currentRound={fl.currentRound}
+              />
+            )}
+
+            {/* Server Metrics — Team Lead only; CONTRIBUTOR cannot access even via direct URL */}
+            {defaultTab === "server" && isTeamLead && (
               <div className="space-y-6">
                 <div className="mb-4 sm:mb-6">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
                     <div>
-                      <h2 className="font-display text-lg sm:text-xl">Network Topology</h2>
+                      <h2 className="font-display text-lg sm:text-xl">
+                        Network Topology
+                      </h2>
                       <p className="text-[10px] sm:text-xs text-muted-foreground font-mono mt-0.5">
                         Live 3D view — drag to orbit · scroll to zoom · hover
                         nodes for details
                       </p>
                     </div>
-                    <Badge variant="outline" className="font-mono text-[10px] sm:text-xs w-fit">
+                    <Badge
+                      variant="outline"
+                      className="font-mono text-[10px] sm:text-xs w-fit"
+                    >
                       {fl.nodes.filter((n) => !n.isBlocked).length} active nodes
                     </Badge>
                   </div>

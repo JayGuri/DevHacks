@@ -16,6 +16,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import { useStore } from "@/lib/store";
 import useFL from "@/hooks/useFL";
+import { useFeatureGate } from "@/hooks/useFeatureGate";
 import { MOCK_USERS } from "@/lib/mockData";
 import { USE_MOCK } from "@/lib/config";
 import { formatPercent, cn, generateInviteCode } from "@/lib/utils";
@@ -75,6 +76,7 @@ export default function AdminProjectDetail() {
   const { currentUser } = useAuth();
   const store = useStore();
   const fl = useFL(id);
+  const { canView3DTopology } = useFeatureGate();
   const viewMode = store.viewMode;
   const nodesByProject = store.nodesByProject;
 
@@ -317,15 +319,34 @@ export default function AdminProjectDetail() {
                     <div>
                       <h2 className="font-display text-lg sm:text-xl">Network Topology</h2>
                       <p className="text-[10px] sm:text-xs text-muted-foreground font-mono mt-0.5">
-                        Live 3D view — drag to orbit · scroll to zoom · hover
-                        nodes for details
+                        {canView3DTopology
+                          ? "Live 3D view — drag to orbit · scroll to zoom · hover nodes for details"
+                          : "Upgrade to Pro to unlock the live 3D topology view"}
                       </p>
                     </div>
                     <Badge variant="outline" className="font-mono text-[10px] sm:text-xs w-fit">
                       {fl.nodes.filter((n) => !n.isBlocked).length} active nodes
                     </Badge>
                   </div>
-                  <NetworkTopology projectId={id} />
+                  {canView3DTopology ? (
+                    <NetworkTopology projectId={id} />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-amber-500/40 bg-amber-500/5 py-16 text-center">
+                      <LockKeyhole size={32} className="mb-3 text-amber-500/60" />
+                      <p className="font-semibold text-amber-600 dark:text-amber-400">
+                        3D Network Topology — Pro Feature
+                      </p>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Real-time 3D topology tracking requires a Pro subscription.
+                      </p>
+                      <Link
+                        to="/admin/billing"
+                        className="mt-4 inline-flex items-center gap-1 rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600"
+                      >
+                        Upgrade to Pro
+                      </Link>
+                    </div>
+                  )}
                 </div>
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                   <Card>

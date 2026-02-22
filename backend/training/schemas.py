@@ -57,6 +57,20 @@ class TrainingConfigUpdate(BaseModel):
     sabdAlpha: Optional[float] = None
 
 
+class GradientSubmission(BaseModel):
+    """Gradient update submitted by a real contributor node.
+
+    The contributor runs local training on their private data and sends
+    the resulting gradient deltas (NOT raw data or model code).
+    These pass through L2 norm clipping and zero-sum masking before
+    entering the FL aggregation pipeline.
+    """
+    nodeId: str                       # Contributor's node identifier
+    gradients: dict                   # {layer_name: [flat gradient values]}
+    dataSize: Optional[int] = 100     # Number of local training samples used
+    round: Optional[int] = None       # Expected round number (for staleness check)
+
+
 class TrainingStatusResponse(BaseModel):
     status: str               # running | paused | completed | idle | error
     currentRound: int

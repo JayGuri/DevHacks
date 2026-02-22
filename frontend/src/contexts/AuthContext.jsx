@@ -87,6 +87,13 @@ export function AuthProvider({ children }) {
     setStoreUser(null);
   }
 
+  /** Update the persisted user object in-place (e.g., after a subscription upgrade). */
+  function updateUser(updatedUser) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedUser));
+    setCurrentUser(updatedUser);
+    setStoreUser(updatedUser);
+  }
+
   async function signup(name, email, password) {
     if (USE_MOCK) {
       return { success: true };
@@ -100,7 +107,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider
-      value={{ currentUser, loading, login, logout, signup }}
+      value={{ currentUser, loading, login, logout, signup, updateUser }}
     >
       {children}
     </AuthContext.Provider>

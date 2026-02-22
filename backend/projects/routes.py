@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from auth.dependencies import get_current_user
+from auth.settings import ENFORCE_TIER_RESTRICTIONS, FREE_TIER_MAX_NODES, PRO_ADVANCED_AGGREGATIONS
 from db.database import get_db
 from db.models import User, Project, ProjectMember, _invite_code, _uuid
 from projects.schemas import (
@@ -103,12 +104,27 @@ def create_project(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Create a new project with FL training configuration."""
+    """Create a new project with FL training configuration.
+
+    Tier enforcement:
+      - FREE users: numClients and max_members capped at FREE_TIER_MAX_NODES (5).
+      - FREE users: advanced aggregation methods (multi_krum, trimmed_mean,
+        coordinate_median) are rejected — defaulted to fedavg.
+    """
+    # Clamp node count and block advanced aggregation for FREE tier
+    num_clients = body.numClients
+    aggregation_method = body.aggregationMethod
+    if ENFORCE_TIER_RESTRICTIONS and current_user.subscription_tier != "PRO":
+        if num_clients > FREE_TIER_MAX_NODES:
+            num_clients = FREE_TIER_MAX_NODES
+        if aggregation_method in PRO_ADVANCED_AGGREGATIONS:
+            aggregation_method = "fedavg"
+
     config = {
-        "numClients": body.numClients,
+        "numClients": num_clients,
         "byzantineFraction": body.byzantineFraction,
         "attackType": body.attackType,
-        "aggregationMethod": body.aggregationMethod,
+        "aggregationMethod": aggregation_method,
         "numRounds": body.numRounds,
         "dirichletAlpha": body.dirichletAlpha,
         "useDifferentialPrivacy": body.useDifferentialPrivacy,
@@ -124,7 +140,7 @@ def create_project(
         created_by=current_user.id,
         visibility=body.visibility,
         invite_code=_invite_code() if body.visibility == "private" else None,
-        max_members=body.numClients,
+        max_members=num_clients,
         config=config,
     )
     db.add(project)
@@ -167,7 +183,14 @@ def update_project(
         if body.visibility == "private" and not project.invite_code:
             project.invite_code = _invite_code()
     if body.config is not None:
-        project.config = body.config.model_dump()
+        new_config = body.config.model_dump()
+        # Free-tier guard: cap node count and block advanced aggregation on update
+        if ENFORCE_TIER_RESTRICTIONS and current_user.subscription_tier != "PRO":
+            if new_config.get("numClients", 0) > FREE_TIER_MAX_NODES:
+                new_config["numClients"] = FREE_TIER_MAX_NODES
+            if new_config.get("aggregationMethod") in PRO_ADVANCED_AGGREGATIONS:
+                new_config["aggregationMethod"] = "fedavg"
+        project.config = new_config
 
     db.commit()
     db.refresh(project)

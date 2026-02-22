@@ -8,7 +8,6 @@ import NotFound from "@/pages/NotFound";
 import Overview from "@/pages/dashboard/Overview";
 import Projects from "@/pages/dashboard/Projects";
 import ProjectDetail from "@/pages/dashboard/ProjectDetail";
-import Profile from "@/pages/dashboard/Profile";
 import AdminOverview from "@/pages/admin/AdminOverview";
 import AdminProjects from "@/pages/admin/AdminProjects";
 import AdminProjectDetail from "@/pages/admin/AdminProjectDetail";
@@ -111,15 +110,10 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
+            {/* /dashboard/profile is retired — redirect to overview */}
             <Route
               path="/dashboard/profile"
-              element={
-                <ProtectedRoute>
-                  <AnimatedPage>
-                    <Profile />
-                  </AnimatedPage>
-                </ProtectedRoute>
-              }
+              element={<Navigate to="/dashboard/overview" replace />}
             />
 
             {/* Admin */}
