@@ -39,6 +39,7 @@ if FL_ENGINE_PATH not in sys.path:
     sys.path.insert(0, FL_ENGINE_PATH)
 
 from training.node_manager import NodeManager
+from training.fl_processor import get_fl_processor
 
 logger = logging.getLogger("arfl.coordinator")
 
@@ -346,13 +347,32 @@ class TrainingCoordinator:
                 # Simulate dynamic events (join/drop/sleep)
                 events = self.node_manager.simulate_random_events(self.current_round)
 
-                # Drain pending contributor updates before executing this round
+                # Drain pending contributor updates (HTTP POST submissions)
                 contributor_updates = self._pending_contributor_updates[:]
                 self._pending_contributor_updates = []
 
+                # Drain pending FL WebSocket updates (passed Layer 1 gatekeeper)
+                processor = get_fl_processor(self.project_id, self.config)
+                processor.set_global_round(self.current_round)
+                processor.clear_round_state()
+                ws_updates = processor.drain_pending_updates()
+
+                # Merge both update sources
+                all_contributor_updates = contributor_updates + [
+                    {
+                        "node_id": u["client_id"],
+                        "gradients": u["weights"],
+                        "l2_norm": u["norm"],
+                        "clipped_norm": u["norm"],
+                        "data_size": u["num_samples"],
+                        "round": u["round_num"],
+                    }
+                    for u in ws_updates
+                ]
+
                 # Execute one training round
-                metrics, nodes, gantt = await asyncio.to_thread(
-                    self._execute_round, self.current_round, contributor_updates
+                metrics, nodes, gantt, node_updates = await asyncio.to_thread(
+                    self._execute_round, self.current_round, all_contributor_updates
                 )
 
                 # Track aggregation trigger time
@@ -385,6 +405,32 @@ class TrainingCoordinator:
                                 "cosineDistance": node.cosine_distance,
                                 "trust": node.trust,
                             })
+
+                    # --- trust_report broadcast (schema §trust_report) ---
+                    gatekeeper_rejected = processor.get_and_clear_gatekeeper_rejected()
+                    trust_report = processor.build_trust_report_msg(
+                        task=self.config.get("task", ""),
+                        round_num=self.current_round,
+                        node_updates=node_updates,
+                        gatekeeper_rejected=gatekeeper_rejected,
+                    )
+                    await self.ws_manager.broadcast(
+                        self.project_id, "trust_report", trust_report
+                    )
+
+                    # --- global_model broadcast (schema §global_model) ---
+                    if self._global_weights:
+                        global_model = processor.build_global_model_msg(
+                            task=self.config.get("task", ""),
+                            round_num=self.current_round,
+                            global_weights=self._global_weights,
+                            personalization_alpha=float(
+                                self.config.get("personalizationAlpha", 0.0)
+                            ),
+                        )
+                        await self.ws_manager.broadcast(
+                            self.project_id, "global_model", global_model
+                        )
 
                 # Pace rounds at ~2 seconds
                 elapsed = time.time() - round_start_time
@@ -612,7 +658,7 @@ class TrainingCoordinator:
             "aggregationMethod": active_method,
         }
 
-        return metrics, all_nodes, round_gantt_blocks
+        return metrics, all_nodes, round_gantt_blocks, node_updates
 
     # ------------------------------------------------------------------
     # Private: Simulation helpers
