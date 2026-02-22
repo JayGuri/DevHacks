@@ -1,66 +1,79 @@
 import { motion } from "framer-motion";
 import { Check, CreditCard } from "lucide-react";
 import { useState, useEffect } from "react";
-
-// Mocking subscriptionService since it wasn't provided in the directory structure
-// The user noted they will have VITE_RAZORPAY_KEY and VITE_RAZORPAY_ID in env.
-const subscriptionService = {
-  createSubscription: async () => {
-    return {
-      data: {
-        success: true,
-        subscription_id: "sub_mock_" + Math.random().toString(36).substring(7),
-      },
-    };
-  },
-};
+import { toast } from "sonner";
+import { useAuth } from "@/contexts/AuthContext";
+import { USE_MOCK } from "@/lib/config";
+import { apiFetch, setToken } from "@/lib/api";
+import AppLayout from "@/components/layout/AppLayout";
 
 const Subscription = () => {
+  const { currentUser, updateUser } = useAuth();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [razorpayLoaded, setRazorpayLoaded] = useState(false);
 
-  // Directly use the environment variables the user mentioned.
-  // Vite strictly requires variables to start with "VITE_" to be exposed to the client
-  // so we check both "VITE_RAZORPAY_KEY" and "RAZORPAY_KEY", or fallback to the hardcoded ID we found in the env.
   const razorpayKeyId =
     import.meta.env?.VITE_RAZORPAY_ID ||
     import.meta.env?.VITE_RAZORPAY_KEY ||
-    "rzp_live_RlGc5i6ZZ3iSf6"; // Fallback from .env so the modal opens regardless
+    "rzp_test_mock";
+
+  const isPro = currentUser?.subscriptionTier === "PRO";
 
   // Load Razorpay Checkout script
   useEffect(() => {
+    const existing = document.querySelector(
+      'script[src="https://checkout.razorpay.com/v1/checkout.js"]',
+    );
+    if (existing) {
+      setRazorpayLoaded(true);
+      return;
+    }
     const script = document.createElement("script");
     script.src = "https://checkout.razorpay.com/v1/checkout.js";
     script.async = true;
-    script.onload = () => {
-      setRazorpayLoaded(true);
-      console.log("✅ Razorpay Checkout script loaded");
-    };
-    script.onerror = () => {
-      console.error("❌ Failed to load Razorpay Checkout script");
-      setError("Failed to load payment gateway");
-    };
+    script.onload = () => setRazorpayLoaded(true);
+    script.onerror = () => setError("Failed to load payment gateway");
     document.body.appendChild(script);
-
     return () => {
-      // Cleanup script on unmount
-      const existingScript = document.querySelector(
+      const s = document.querySelector(
         'script[src="https://checkout.razorpay.com/v1/checkout.js"]',
       );
-      if (existingScript) {
-        document.body.removeChild(existingScript);
-      }
+      if (s) document.body.removeChild(s);
     };
   }, []);
 
-  const handlePlanClick = async (plan) => {
-    if (plan.name === "Free") {
+  /** Called after Razorpay confirms payment — upgrades tier in backend and updates local state. */
+  async function activateProTier() {
+    if (USE_MOCK) {
+      // In mock mode: simulate upgrade locally so the UI responds immediately
+      const upgraded = { ...currentUser, subscriptionTier: "PRO" };
+      updateUser(upgraded);
+      toast.success("Pro plan activated! (mock mode)");
       return;
     }
-    if (plan.name === "Pro") {
-      await handleProSubscription();
+
+    try {
+      const data = await apiFetch("/auth/subscription", {
+        method: "PATCH",
+        body: JSON.stringify({ tier: "PRO" }),
+      });
+      // Update token so new JWT (with tier=PRO) is used for subsequent requests
+      setToken(data.token);
+      // Update in-memory + localStorage user object — Pro features unlock immediately
+      updateUser(data.user);
+      toast.success("Pro plan activated! All Pro features are now unlocked.");
+    } catch (err) {
+      console.error("Subscription upgrade failed:", err);
+      toast.error(
+        "Upgrade recorded in payment but failed to activate. Please contact support.",
+      );
     }
+  }
+
+  const handlePlanClick = async (plan) => {
+    if (plan.name === "Free" || isPro) return;
+    if (plan.name === "Pro") await handleProSubscription();
   };
 
   const handleProSubscription = async () => {
@@ -68,7 +81,6 @@ const Subscription = () => {
       setError("Payment gateway is still loading. Please wait...");
       return;
     }
-
     if (!razorpayKeyId) {
       setError("Razorpay Key ID not configured. Please check your .env file.");
       return;
@@ -78,62 +90,40 @@ const Subscription = () => {
     setError(null);
 
     try {
-      const userId = localStorage.getItem("user_id") || "demo_user";
-
-      // Simulate backend call to create a subscription
-      const response = await subscriptionService.createSubscription();
-
-      if (response.data.success) {
-        // Initialize Razorpay Checkout
-        const options = {
-          key: razorpayKeyId,
-          amount: 100, // Amount in paise (100 paise = 1 INR)
-          currency: "INR",
-          name: "ARFL Platform",
-          description: "Pro Plan - Monthly Subscription",
-          prefill: {
-            name: localStorage.getItem("user_name") || "",
-            email: localStorage.getItem("user_email") || "",
-            contact: localStorage.getItem("user_phone") || "",
-          },
-          theme: {
-            color: "#06b6d4", // cyan-500
-          },
-          handler: function (response) {
-            console.log("✅ Payment successful:", response);
-            setLoading(false);
-            alert(
-              "Subscription activated successfully! Welcome to the Pro plan.",
-            );
-            // Optionally redirect
-            // window.location.reload();
-          },
-          modal: {
-            ondismiss: function () {
-              console.log("Payment modal closed");
-              setLoading(false);
-            },
-          },
-        };
-
-        const rzp = new window.Razorpay(options);
-        rzp.on("payment.failed", function (response) {
-          console.error(
-            "❌ Payment failed - Full response:",
-            JSON.stringify(response, null, 2),
-          );
-          let errorMsg =
-            response.error?.description ||
-            response.error?.reason ||
-            "Unknown payment error";
-          setError(`Payment failed: ${errorMsg}`);
+      const options = {
+        key: razorpayKeyId,
+        amount: 99900, // 999 INR in paise
+        currency: "INR",
+        name: "ARFL Platform",
+        description: "Pro Plan — Monthly Subscription",
+        prefill: {
+          name: currentUser?.name || "",
+          email: currentUser?.email || "",
+          contact: "",
+        },
+        theme: { color: "#06b6d4" },
+        handler: async function (response) {
+          console.log("✅ Payment successful:", response.razorpay_payment_id);
+          await activateProTier();
           setLoading(false);
-        });
+        },
+        modal: {
+          ondismiss: function () {
+            setLoading(false);
+          },
+        },
+      };
 
-        rzp.open();
-      } else {
-        throw new Error("Failed to create subscription");
-      }
+      const rzp = new window.Razorpay(options);
+      rzp.on("payment.failed", function (response) {
+        const errorMsg =
+          response.error?.description ||
+          response.error?.reason ||
+          "Unknown error";
+        setError(`Payment failed: ${errorMsg}`);
+        setLoading(false);
+      });
+      rzp.open();
     } catch (err) {
       console.error("❌ Subscription error:", err);
       setError(
@@ -157,7 +147,7 @@ const Subscription = () => {
           description: "Basic 2D Telemetry & Logs",
         },
       ],
-      ctaLabel: "Active Plan",
+      ctaLabel: isPro ? "Downgrade to Free" : "Active Plan",
       guaranteeText: "No credit card required",
     },
     {
@@ -167,10 +157,7 @@ const Subscription = () => {
       description:
         "Built for teams that rely on robust federated models in production.",
       features: [
-        {
-          title: "Connected Edge Nodes",
-          description: "Unlimited Scale",
-        },
+        { title: "Connected Edge Nodes", description: "Unlimited Scale" },
         {
           title: "Aggregation Rules",
           description: "Multi-Krum, Trimmed Mean, Median",
@@ -181,14 +168,14 @@ const Subscription = () => {
         },
       ],
       highlighted: true,
-      badgeText: "POPULAR",
-      ctaLabel: "Upgrade To Pro",
+      badgeText: isPro ? "ACTIVE" : "POPULAR",
+      ctaLabel: isPro ? "Current Plan" : "Upgrade To Pro",
       guaranteeText: "Cancel anytime",
     },
   ];
 
   return (
-    <div className="min-h-screen bg-transparent py-12">
+    <AppLayout title="Billing">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -204,6 +191,11 @@ const Subscription = () => {
           <p className="text-muted-foreground text-lg">
             Scale your asynchronous federated learning securely.
           </p>
+          {isPro && (
+            <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-emerald-500/10 px-4 py-1.5 text-sm font-medium text-emerald-600 dark:text-emerald-400">
+              <Check className="h-4 w-4" /> You are on the Pro plan
+            </div>
+          )}
         </motion.div>
 
         {error && (
@@ -274,28 +266,26 @@ const Subscription = () => {
                     </div>
 
                     <div className="relative mt-8 flex-1 space-y-5 border-t border-border/50 pt-8">
-                      {plan.features.map((feature, featureIndex) => {
-                        return (
-                          <div
-                            key={`${plan.name}-feature-${featureIndex}`}
-                            className="flex items-start gap-4"
-                          >
-                            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-cyan-500/10 mt-0.5">
-                              <Check className="h-4 w-4 text-cyan-500" />
-                            </div>
-                            <div>
-                              <p className="text-sm font-semibold text-foreground">
-                                {feature.title}
-                              </p>
-                              {feature.description && (
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  {feature.description}
-                                </p>
-                              )}
-                            </div>
+                      {plan.features.map((feature, featureIndex) => (
+                        <div
+                          key={`${plan.name}-feature-${featureIndex}`}
+                          className="flex items-start gap-4"
+                        >
+                          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-cyan-500/10 mt-0.5">
+                            <Check className="h-4 w-4 text-cyan-500" />
                           </div>
-                        );
-                      })}
+                          <div>
+                            <p className="text-sm font-semibold text-foreground">
+                              {feature.title}
+                            </p>
+                            {feature.description && (
+                              <p className="text-xs text-muted-foreground mt-1">
+                                {feature.description}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
                     </div>
 
                     <div className="relative mt-10">
@@ -304,19 +294,20 @@ const Subscription = () => {
                         disabled={
                           loading ||
                           (plan.name === "Pro" && !razorpayLoaded) ||
-                          plan.name === "Free"
+                          plan.name === "Free" ||
+                          (plan.name === "Pro" && isPro)
                         }
-                        className={`group/btn relative w-full overflow-hidden rounded-xl p-px font-semibold shadow-sm transition-all duration-200 
+                        className={`group/btn relative w-full overflow-hidden rounded-xl p-px font-semibold shadow-sm transition-all duration-200
                           ${
-                            plan.highlighted ?
+                            plan.highlighted && !isPro ?
                               "bg-gradient-to-r from-cyan-500 to-blue-500 text-white hover:shadow-cyan-500/25 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
                             : "bg-muted text-muted-foreground cursor-default"
                           }`}
                       >
                         <div
                           className={`relative flex items-center justify-center gap-2 rounded-[11px] px-4 py-3.5 transition-colors
-                          ${plan.highlighted ? "bg-cyan-500/0 hover:bg-white/10" : "bg-transparent"}
-                        `}
+                            ${plan.highlighted && !isPro ? "bg-cyan-500/0 hover:bg-white/10" : "bg-transparent"}
+                          `}
                         >
                           {loading && plan.name === "Pro" ?
                             <>
@@ -333,12 +324,12 @@ const Subscription = () => {
                                   r="10"
                                   stroke="currentColor"
                                   strokeWidth="4"
-                                ></circle>
+                                />
                                 <path
                                   className="opacity-75"
                                   fill="currentColor"
                                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                                ></path>
+                                />
                               </svg>
                               Processing...
                             </>
@@ -361,7 +352,7 @@ const Subscription = () => {
           ))}
         </div>
       </div>
-    </div>
+    </AppLayout>
   );
 };
 

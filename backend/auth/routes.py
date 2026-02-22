@@ -1,14 +1,15 @@
 # backend/auth/routes.py — Authentication REST API
 """
-POST /api/auth/signup  — Register new user
-POST /api/auth/login   — Authenticate user
-GET  /api/auth/me      — Get current user from JWT
-GET  /api/users        — List all users (admin)
-PATCH /api/users/:id/role — Change user role (admin)
+POST  /api/auth/signup          — Register new user
+POST  /api/auth/login           — Authenticate user
+GET   /api/auth/me              — Get current user from JWT
+PATCH /api/auth/subscription    — Upgrade / downgrade subscription tier
+GET   /api/users                — List all users (admin)
+PATCH /api/users/:id/role       — Change user role (admin)
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from auth.utils import hash_password, verify_password, create_token
@@ -39,6 +40,7 @@ class UserResponse(BaseModel):
     name: str
     email: str
     role: str
+    subscriptionTier: str
     createdAt: str
 
     class Config:
@@ -54,6 +56,10 @@ class RoleUpdateRequest(BaseModel):
     role: str  # "TEAM_LEAD" | "CONTRIBUTOR"
 
 
+class SubscriptionUpdateRequest(BaseModel):
+    tier: str  # "PRO" | "FREE"
+
+
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
@@ -64,6 +70,7 @@ def _user_to_response(user: User) -> dict:
         "name": user.name,
         "email": user.email,
         "role": user.role,
+        "subscriptionTier": user.subscription_tier,
         "createdAt": user.created_at.isoformat() if user.created_at else "",
     }
 
@@ -88,7 +95,7 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    token = create_token(user.id, user.role)
+    token = create_token(user.id, user.role, user.subscription_tier)
     return {"user": _user_to_response(user), "token": token}
 
 
@@ -99,7 +106,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     if not user or not verify_password(body.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    token = create_token(user.id, user.role)
+    token = create_token(user.id, user.role, user.subscription_tier)
     return {"user": _user_to_response(user), "token": token}
 
 
@@ -107,6 +114,29 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 def get_me(current_user: User = Depends(get_current_user)):
     """Return the current authenticated user."""
     return {"user": _user_to_response(current_user)}
+
+
+@router.patch("/auth/subscription")
+def update_subscription(
+    body: SubscriptionUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Upgrade or downgrade the current user's subscription tier.
+
+    Called by the frontend after a successful Razorpay payment. Returns a
+    new JWT so Pro features unlock immediately without requiring re-login.
+    """
+    if body.tier not in ("FREE", "PRO"):
+        raise HTTPException(status_code=400, detail="Invalid tier. Must be FREE or PRO.")
+
+    current_user.subscription_tier = body.tier
+    db.commit()
+    db.refresh(current_user)
+
+    # Re-issue token so the tier claim in the JWT is updated immediately
+    new_token = create_token(current_user.id, current_user.role, current_user.subscription_tier)
+    return {"user": _user_to_response(current_user), "token": new_token}
 
 
 @router.get("/users")

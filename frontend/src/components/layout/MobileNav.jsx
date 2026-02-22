@@ -1,13 +1,10 @@
 import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { Home, FolderOpen, User, UserPlus, MoreHorizontal } from "lucide-react";
+import { Home, FolderOpen, UserPlus, MoreHorizontal } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/lib/store";
-import {
-  getUserManagedProjects,
-  getPendingRequests,
-} from "@/lib/projectUtils";
+import { getUserManagedProjects, getPendingRequests } from "@/lib/projectUtils";
 import {
   Sheet,
   SheetContent,
@@ -23,7 +20,7 @@ function TabLink({ icon: Icon, label, to, badge }) {
       className={({ isActive }) =>
         cn(
           "relative flex flex-col items-center gap-1 px-2 py-1.5 text-[10px] font-medium transition-colors",
-          isActive ? "text-primary" : "text-muted-foreground"
+          isActive ? "text-primary" : "text-muted-foreground",
         )
       }
     >
@@ -46,10 +43,11 @@ export default function MobileNav() {
   const [open, setOpen] = useState(false);
   const isLead = currentUser?.role === "TEAM_LEAD";
 
-  const pendingRequestCount = isLead
-    ? getUserManagedProjects(currentUser?.id, store).reduce(
+  const pendingRequestCount =
+    isLead ?
+      getUserManagedProjects(currentUser?.id, store).reduce(
         (sum, p) => sum + getPendingRequests(p.id, store).length,
-        0
+        0,
       )
     : 0;
 
@@ -59,7 +57,6 @@ export default function MobileNav() {
       <nav className="fixed bottom-0 left-0 right-0 z-50 flex items-stretch justify-around border-t border-border bg-card px-1 lg:hidden">
         <TabLink icon={Home} label="Home" to="/dashboard/overview" />
         <TabLink icon={FolderOpen} label="Projects" to="/dashboard/projects" />
-        <TabLink icon={User} label="Profile" to="/dashboard/profile" />
         {isLead && (
           <TabLink
             icon={UserPlus}

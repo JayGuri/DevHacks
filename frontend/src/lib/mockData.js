@@ -2,12 +2,14 @@ import { randomBetween, clampVal } from "./utils";
 
 // ─── Users ───────────────────────────────────────────────────────────
 export const MOCK_USERS = [
-  { id: "u1", name: "Alex Morgan",  email: "lead@arfl.dev",          password: "password", role: "TEAM_LEAD",   createdAt: "2025-01-15" },
-  { id: "u2", name: "Sam Chen",     email: "contributor1@arfl.dev",  password: "password", role: "CONTRIBUTOR", createdAt: "2025-02-01" },
-  { id: "u3", name: "Priya Patel",  email: "contributor2@arfl.dev",  password: "password", role: "CONTRIBUTOR", createdAt: "2025-02-10" },
-  { id: "u4", name: "Jordan Lee",   email: "contributor3@arfl.dev",  password: "password", role: "CONTRIBUTOR", createdAt: "2025-02-20" },
-  { id: "u5", name: "Riley Kim",    email: "contributor4@arfl.dev",  password: "password", role: "CONTRIBUTOR", createdAt: "2025-03-01" },
-  { id: "u6", name: "Taylor Wu",    email: "contributor5@arfl.dev",  password: "password", role: "CONTRIBUTOR", createdAt: "2025-03-10" },
+  { id: "u1", name: "Alex Morgan",  email: "lead@arfl.dev",          password: "password", role: "TEAM_LEAD",   subscriptionTier: "PRO",  createdAt: "2025-01-15" },
+  { id: "u2", name: "Sam Chen",     email: "contributor1@arfl.dev",  password: "password", role: "CONTRIBUTOR", subscriptionTier: "FREE", createdAt: "2025-02-01" },
+  { id: "u3", name: "Priya Patel",  email: "contributor2@arfl.dev",  password: "password", role: "CONTRIBUTOR", subscriptionTier: "FREE", createdAt: "2025-02-10" },
+  { id: "u4", name: "Jordan Lee",   email: "contributor3@arfl.dev",  password: "password", role: "CONTRIBUTOR", subscriptionTier: "FREE", createdAt: "2025-02-20" },
+  { id: "u5", name: "Riley Kim",    email: "contributor4@arfl.dev",  password: "password", role: "CONTRIBUTOR", subscriptionTier: "FREE", createdAt: "2025-03-01" },
+  { id: "u6", name: "Taylor Wu",    email: "contributor5@arfl.dev",  password: "password", role: "CONTRIBUTOR", subscriptionTier: "FREE", createdAt: "2025-03-10" },
+  // Dev testing: FREE-tier Team Lead to verify tier gates independently of RBAC
+  { id: "u7", name: "Dev Free Lead", email: "free-lead@arfl.dev",    password: "password", role: "TEAM_LEAD",   subscriptionTier: "FREE", createdAt: "2025-03-15" },
 ];
 
 // ─── Projects ────────────────────────────────────────────────────────

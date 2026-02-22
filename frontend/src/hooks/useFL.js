@@ -29,6 +29,8 @@ const NULL_FL = {
   ganttBlocks: [],
   aggTriggerTimes: [],
   isRunning: false,
+  trainingStatus: "idle",
+  loading: false,
   currentRound: 0,
   totalRounds: 50,
   blockNode: () => {},
@@ -68,6 +70,8 @@ export default function useFL(projectId) {
 
   const [currentRound, setCurrentRound] = useState(0);
   const [isRunning, setIsRunning] = useState(true);
+  const [trainingStatus, setTrainingStatus] = useState("idle");
+  const [loading, setLoading] = useState(!USE_MOCK);
   const [aggTriggerTimes, setAggTriggerTimes] = useState([]);
 
   const intervalRef = useRef(null);
@@ -99,6 +103,7 @@ export default function useFL(projectId) {
       setCurrentRound(lastRound);
       currentRoundRef.current = lastRound;
     }
+    setLoading(false);
   }, [projectId, project, setNodes, appendRound]);
 
   const tick = useCallback(() => {
@@ -233,9 +238,12 @@ export default function useFL(projectId) {
             ].slice(-40);
           }
         } else if (eventType === "training_status") {
-          setIsRunning(data.status === "running");
+          const st = data.status;
+          setIsRunning(st === "running");
+          setTrainingStatus(st || "idle");
           setCurrentRound(data.currentRound || 0);
           currentRoundRef.current = data.currentRound || 0;
+          setLoading(false);
         } else if (eventType === "node_flagged") {
           pushNotification({
             type: "alert",
@@ -248,10 +256,13 @@ export default function useFL(projectId) {
             data.metrics.forEach((m) => appendRound(projectId, m));
           }
           if (data.status) {
-            setIsRunning(data.status.status === "running");
+            const st = data.status.status;
+            setIsRunning(st === "running");
+            setTrainingStatus(st || "idle");
             setCurrentRound(data.status.currentRound || 0);
             currentRoundRef.current = data.status.currentRound || 0;
           }
+          setLoading(false);
         }
       } catch (err) {
         console.error("[WS] Parse error:", err);
@@ -342,6 +353,12 @@ export default function useFL(projectId) {
 
   return useMemo(() => {
     if (!projectId) return NULL_FL;
+    // Derive status string: if mock mode, derive from isRunning flag
+    const status =
+      USE_MOCK ?
+        isRunning ? "running"
+        : "idle"
+      : trainingStatus;
     return {
       project,
       nodes,
@@ -350,8 +367,10 @@ export default function useFL(projectId) {
       ganttBlocks: ganttBlocksRef.current,
       aggTriggerTimes,
       isRunning,
+      trainingStatus: status,
       currentRound,
       totalRounds: project?.config?.numRounds || 50,
+      loading,
       blockNode,
       unblockNode,
       setAggregationMethod: (method) => {
@@ -403,6 +422,8 @@ export default function useFL(projectId) {
     allRounds,
     aggTriggerTimes,
     isRunning,
+    trainingStatus,
+    loading,
     currentRound,
     blockNode,
     unblockNode,

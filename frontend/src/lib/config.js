@@ -14,3 +14,18 @@ export const API_BASE_URL =
 
 /** WebSocket base URL */
 export const WS_BASE_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8000";
+
+/**
+ * Subscription tier enforcement toggle.
+ *
+ * When true  — FREE users are blocked from PRO-only features in the UI.
+ * When false — All tier checks are bypassed (developer bypass).
+ *              RBAC role checks are NEVER bypassed regardless of this value.
+ *
+ * Set VITE_ENFORCE_TIER_RESTRICTIONS=false in your .env to disable.
+ */
+export const ENFORCE_TIER_RESTRICTIONS =
+  import.meta.env.VITE_ENFORCE_TIER_RESTRICTIONS !== "false";
+
+/** Maximum nodes allowed on the Free tier */
+export const FREE_TIER_MAX_NODES = 5;

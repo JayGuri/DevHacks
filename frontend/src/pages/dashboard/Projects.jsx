@@ -11,6 +11,7 @@ import {
   ClipboardList,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useFeatureGate } from "@/hooks/useFeatureGate";
 import { useStore } from "@/lib/store";
 import { USE_MOCK } from "@/lib/config";
 import {
@@ -52,6 +53,7 @@ import {
 
 export default function Projects() {
   const { currentUser } = useAuth();
+  const { isTeamLead } = useFeatureGate();
   const navigate = useNavigate();
   const store = useStore();
   const userProjects = store.userProjects;
@@ -236,7 +238,8 @@ export default function Projects() {
                   <TableRow>
                     <TableHead>Project</TableHead>
                     <TableHead>My Node</TableHead>
-                    <TableHead>Accuracy</TableHead>
+                    {/* Global model accuracy — Team Lead only */}
+                    {isTeamLead && <TableHead>Accuracy</TableHead>}
                     <TableHead>My Trust</TableHead>
                     <TableHead>Action</TableHead>
                   </TableRow>
@@ -252,9 +255,11 @@ export default function Projects() {
                             {myNodeId(p)}
                           </Badge>
                         </TableCell>
-                        <TableCell className="mono-data">
-                          {formatPercent(latestAccuracy(p.id))}
-                        </TableCell>
+                        {isTeamLead && (
+                          <TableCell className="mono-data">
+                            {formatPercent(latestAccuracy(p.id))}
+                          </TableCell>
+                        )}
                         <TableCell
                           className={`mono-data ${getTrustColor(trust)}`}
                         >
@@ -314,12 +319,15 @@ export default function Projects() {
                           <Users size={12} className="mr-1" />
                           {p.members.length} members
                         </Badge>
-                        <Badge
-                          variant="outline"
-                          className="mono-data text-emerald-500"
-                        >
-                          {formatPercent(latestAccuracy(p.id))}
-                        </Badge>
+                        {/* Global model accuracy — Team Lead only */}
+                        {isTeamLead && (
+                          <Badge
+                            variant="outline"
+                            className="mono-data text-emerald-500"
+                          >
+                            {formatPercent(latestAccuracy(p.id))}
+                          </Badge>
+                        )}
                         <Badge variant="outline" className="mono-data">
                           {p.config.attackType.replace(/_/g, " ")}
                         </Badge>

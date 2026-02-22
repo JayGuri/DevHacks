@@ -1,4 +1,4 @@
-import { useMemo, useEffect } from "react";
+import { useMemo, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -10,6 +10,9 @@ import {
   ArrowRight,
   Layers,
   Lock,
+  Radio,
+  CheckCircle2,
+  Pencil,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useAuth } from "@/contexts/AuthContext";
@@ -17,6 +20,7 @@ import { useStore } from "@/lib/store";
 import { USE_MOCK } from "@/lib/config";
 import { apiListProjects } from "@/lib/api";
 import { getAllProjects } from "@/lib/projectUtils";
+import { useFeatureGate } from "@/hooks/useFeatureGate";
 import {
   getInitials,
   formatPercent,
@@ -30,6 +34,7 @@ import EmptyState from "@/components/dashboard/EmptyState";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -41,7 +46,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-function ProjectCard({ project, userId, navigate }) {
+function ProjectCard({ project, userId, navigate, isTeamLead }) {
   const member = project.members.find((m) => m.userId === userId);
   const nodeId = member?.nodeId || "—";
   const rounds = useStore((s) => s.roundsByProject[project.id]) || [];
@@ -62,27 +67,34 @@ function ProjectCard({ project, userId, navigate }) {
           <Badge variant="outline" className="mono-data">
             {nodeId}
           </Badge>
-          <Badge className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-            {formatPercent(accuracy)}
-          </Badge>
+          {/* Global model accuracy — Team Lead only */}
+          {isTeamLead && (
+            <Badge className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+              {formatPercent(accuracy)}
+            </Badge>
+          )}
         </div>
-        <div className="space-y-1">
-          <div className="flex justify-between text-xs text-muted-foreground">
-            <span>Trust</span>
-            <span className={getTrustColor(trust)}>
-              {formatPercent(trust * 100)}
-            </span>
+        {isTeamLead && (
+          <div className="space-y-1">
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>Trust</span>
+              <span className={getTrustColor(trust)}>
+                {formatPercent(trust * 100)}
+              </span>
+            </div>
+            <Progress value={trust * 100} className="h-1.5" />
           </div>
-          <Progress value={trust * 100} className="h-1.5" />
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="mt-auto"
-          onClick={() => navigate(`/dashboard/projects/${project.id}`)}
-        >
-          View Project <ArrowRight size={14} className="ml-1" />
-        </Button>
+        )}
+        {isTeamLead && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-auto"
+            onClick={() => navigate(`/dashboard/projects/${project.id}`)}
+          >
+            View Project <ArrowRight size={14} className="ml-1" />
+          </Button>
+        )}
       </CardContent>
     </Card>
   );
@@ -90,6 +102,7 @@ function ProjectCard({ project, userId, navigate }) {
 
 export default function Overview() {
   const { currentUser } = useAuth();
+  const { isTeamLead } = useFeatureGate();
   const store = useStore();
   const viewMode = store.viewMode;
   const userProjects = store.userProjects;
@@ -97,6 +110,10 @@ export default function Overview() {
   const roundsByProject = store.roundsByProject;
   const navigate = useNavigate();
   const setProjects = useStore((s) => s.setProjects);
+
+  // Inline name editing
+  const [editing, setEditing] = useState(false);
+  const [nameVal, setNameVal] = useState(currentUser?.name || "");
 
   // Fetch projects from API when not using mock
   useEffect(() => {
@@ -176,20 +193,96 @@ export default function Overview() {
     });
   }, [joinedProjects, currentUser, nodesByProject, roundsByProject]);
 
+  // First joined project's node for the Client node status panel
+  const clientNode = useMemo(() => {
+    if (isTeamLead || joinedProjects.length === 0) return null;
+    const firstProject = joinedProjects[0];
+    const member = firstProject.members?.find(
+      (m) => m.userId === currentUser?.id,
+    );
+    const nodes = nodesByProject[firstProject.id] || [];
+    return nodes.find((n) => n.displayId === member?.nodeId) || null;
+  }, [isTeamLead, joinedProjects, currentUser, nodesByProject]);
+
   return (
     <AppLayout title="Overview">
-      {/* Profile hero */}
+      {/* Client-only: Node Status Banner */}
+      {!isTeamLead && (
+        <Card className="mb-6 border-emerald-500/30 bg-emerald-500/5">
+          <CardContent className="flex items-center gap-4 p-4">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/10">
+              <Radio size={20} className="animate-pulse text-emerald-500" />
+            </div>
+            <div className="flex-1">
+              <p className="font-semibold text-emerald-600 dark:text-emerald-400">
+                Your node is live and connected
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {clientNode ?
+                  `Node ${clientNode.displayId} — local training round is being recorded`
+                : "Join a project to activate your node"}
+              </p>
+            </div>
+            {clientNode && (
+              <CheckCircle2 size={20} className="text-emerald-500" />
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Profile hero — with inline name edit */}
       <Card className="mb-6">
         <CardContent className="flex items-center gap-4 p-5">
           <Avatar className="h-14 w-14">
             <AvatarFallback className="text-lg">
-              {getInitials(currentUser?.name)}
+              {getInitials(nameVal || currentUser?.name)}
             </AvatarFallback>
           </Avatar>
-          <div>
-            <h2 className="font-display text-2xl font-bold">
-              {currentUser?.name}
-            </h2>
+          <div className="flex-1 min-w-0">
+            {editing ?
+              <div className="flex items-center gap-2">
+                <Input
+                  value={nameVal}
+                  onChange={(e) => setNameVal(e.target.value)}
+                  className="h-8 w-48"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") setEditing(false);
+                    if (e.key === "Escape") {
+                      setNameVal(currentUser?.name || "");
+                      setEditing(false);
+                    }
+                  }}
+                />
+                <Button size="sm" onClick={() => setEditing(false)}>
+                  Save
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setNameVal(currentUser?.name || "");
+                    setEditing(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            : <div className="flex items-center gap-2">
+                <h2 className="font-display text-2xl font-bold truncate">
+                  {nameVal || currentUser?.name}
+                </h2>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7 shrink-0"
+                  onClick={() => setEditing(true)}
+                  title="Edit display name"
+                >
+                  <Pencil size={13} />
+                </Button>
+              </div>
+            }
             <div className="mt-1 flex items-center gap-2">
               <RoleBadge role={currentUser?.role} />
               <span className="text-xs text-muted-foreground">
@@ -201,29 +294,32 @@ export default function Overview() {
       </Card>
 
       {/* Stat cards */}
-      <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard
-          label="Total Projects"
-          value={joinedProjects.length}
-          icon={FolderOpen}
-        />
-        <StatCard label="Total Rounds" value={totalRounds} icon={Zap} />
-        <StatCard
-          label="Avg Trust"
-          value={formatPercent(avgTrust * 100)}
-          icon={Shield}
-          color="text-emerald-500"
-        />
-        <StatCard
-          label="Best Accuracy"
-          value={formatPercent(bestAccuracy)}
-          icon={Target}
-          color="text-primary"
-        />
-      </div>
+      {isTeamLead && (
+        <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <StatCard
+            label="Total Projects"
+            value={joinedProjects.length}
+            icon={FolderOpen}
+          />
+          <StatCard label="Total Rounds" value={totalRounds} icon={Zap} />
+          <StatCard
+            label="Avg Trust"
+            value={formatPercent(avgTrust * 100)}
+            icon={Shield}
+            color="text-emerald-500"
+          />
+          {/* Global model accuracy — Team Lead only */}
+          <StatCard
+            label="Best Accuracy"
+            value={formatPercent(bestAccuracy)}
+            icon={Target}
+            color="text-primary"
+          />
+        </div>
+      )}
 
-      {/* Detailed: extra stat cards */}
-      {viewMode === "detailed" && (
+      {/* Extra stat cards (team lead only) */}
+      {isTeamLead && (
         <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
           <StatCard
             label="Avg Epsilon"
@@ -245,36 +341,26 @@ export default function Overview() {
         </div>
       )}
 
-      {/* My Projects */}
+      {/* My Projects — always detailed table */}
       <h3 className="mb-3 font-display text-lg font-semibold">My Projects</h3>
       {joinedProjects.length === 0 ?
         <EmptyState
           icon={FolderPlus}
           message="No projects yet. Join a project to start contributing."
         />
-      : viewMode === "simple" ?
-        <div className="mb-6 grid gap-4 md:grid-cols-2">
-          {joinedProjects.map((p) => (
-            <ProjectCard
-              key={p.id}
-              project={p}
-              userId={currentUser?.id}
-              navigate={navigate}
-            />
-          ))}
-        </div>
       : <div className="mb-6 overflow-x-auto rounded-md border border-border">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Project</TableHead>
                 <TableHead>Node</TableHead>
-                <TableHead>Trust</TableHead>
-                <TableHead>Accuracy</TableHead>
+                {isTeamLead && <TableHead>Trust</TableHead>}
+                {/* Model accuracy and privacy budget are global metrics — Team Lead only */}
+                {isTeamLead && <TableHead>Accuracy</TableHead>}
                 <TableHead>Rounds</TableHead>
-                <TableHead>ε Spent</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead />
+                {isTeamLead && <TableHead>ε Spent</TableHead>}
+                {isTeamLead && <TableHead>Status</TableHead>}
+                {isTeamLead && <TableHead />}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -286,28 +372,40 @@ export default function Overview() {
                       {r.nodeId}
                     </Badge>
                   </TableCell>
-                  <TableCell className={`mono-data ${getTrustColor(r.trust)}`}>
-                    {formatPercent(r.trust * 100)}
-                  </TableCell>
-                  <TableCell className="mono-data">
-                    {formatPercent(r.accuracy)}
-                  </TableCell>
-                  <TableCell className="mono-data">{r.rounds}</TableCell>
-                  <TableCell className="mono-data">
-                    {r.epsilon.toFixed(2)}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{r.status}</Badge>
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => navigate(`/dashboard/projects/${r.id}`)}
+                  {isTeamLead && (
+                    <TableCell
+                      className={`mono-data ${getTrustColor(r.trust)}`}
                     >
-                      View <ArrowRight size={14} className="ml-1" />
-                    </Button>
-                  </TableCell>
+                      {formatPercent(r.trust * 100)}
+                    </TableCell>
+                  )}
+                  {isTeamLead && (
+                    <TableCell className="mono-data">
+                      {formatPercent(r.accuracy)}
+                    </TableCell>
+                  )}
+                  <TableCell className="mono-data">{r.rounds}</TableCell>
+                  {isTeamLead && (
+                    <TableCell className="mono-data">
+                      {r.epsilon.toFixed(2)}
+                    </TableCell>
+                  )}
+                  {isTeamLead && (
+                    <TableCell>
+                      <Badge variant="outline">{r.status}</Badge>
+                    </TableCell>
+                  )}
+                  {isTeamLead && (
+                    <TableCell>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => navigate(`/dashboard/projects/${r.id}`)}
+                      >
+                        View <ArrowRight size={14} className="ml-1" />
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -315,8 +413,8 @@ export default function Overview() {
         </div>
       }
 
-      {/* Detailed: recent activity */}
-      {viewMode === "detailed" && (
+      {/* Recent activity — team lead only */}
+      {isTeamLead && (
         <div>
           <h3 className="mb-3 font-display text-lg font-semibold">
             Recent Activity

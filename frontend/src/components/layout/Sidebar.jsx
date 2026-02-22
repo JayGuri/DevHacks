@@ -14,12 +14,12 @@ import {
   Users,
   UserPlus,
   LogOut,
-  ShieldCheck,
   Plus,
   Server,
   Settings,
   ChevronRight,
   CreditCard,
+  Send,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { getInitials, cn } from "@/lib/utils";
@@ -195,7 +195,8 @@ const ProjectNavItem = memo(
               className="overflow-hidden"
             >
               <div className="ml-6 my-1 space-y-0.5 border-l border-border/60 pl-3">
-                {!amLead && (
+                {/* Team leads see My Node; contributors go straight to My Workspace */}
+                {amLead && (
                   <NavLink
                     to={`/dashboard/projects/${project.id}?tab=mynode`}
                     onClick={onNavigate}
@@ -212,21 +213,41 @@ const ProjectNavItem = memo(
                     My Node
                   </NavLink>
                 )}
-                <NavLink
-                  to={`${basePath}?tab=server`}
-                  onClick={onNavigate}
-                  className={({ isActive }) =>
-                    cn(
-                      "flex items-center gap-2 rounded-md py-1.5 px-2 text-[12px] transition-colors",
-                      isActive ?
-                        "bg-accent/50 font-medium text-foreground"
-                      : "text-muted-foreground hover:text-foreground hover:bg-accent/30",
-                    )
-                  }
-                >
-                  <Server size={12} />
-                  Server Metrics
-                </NavLink>
+
+                {/* Contributors → My Workspace; leads → Server Metrics */}
+                {!amLead ?
+                  <NavLink
+                    to={`/dashboard/projects/${project.id}?tab=workspace`}
+                    onClick={onNavigate}
+                    className={({ isActive }) =>
+                      cn(
+                        "flex items-center gap-2 rounded-md py-1.5 px-2 text-[12px] transition-colors",
+                        isActive ?
+                          "bg-accent/50 font-medium text-foreground"
+                        : "text-muted-foreground hover:text-foreground hover:bg-accent/30",
+                      )
+                    }
+                  >
+                    <Send size={12} />
+                    My Workspace
+                  </NavLink>
+                : <NavLink
+                    to={`${basePath}?tab=server`}
+                    onClick={onNavigate}
+                    className={({ isActive }) =>
+                      cn(
+                        "flex items-center gap-2 rounded-md py-1.5 px-2 text-[12px] transition-colors",
+                        isActive ?
+                          "bg-accent/50 font-medium text-foreground"
+                        : "text-muted-foreground hover:text-foreground hover:bg-accent/30",
+                      )
+                    }
+                  >
+                    <Server size={12} />
+                    Server Metrics
+                  </NavLink>
+                }
+
                 {amLead && (
                   <NavLink
                     to={`${basePath}?tab=admin`}
@@ -327,22 +348,20 @@ export const SidebarContent = memo(({ onNavigate }) => {
                 />
               ))}
             </div>
-            <Link
-              to="/dashboard/projects?tab=available"
-              onClick={onNavigate}
-              className="mx-3 mt-3 flex items-center gap-2 py-1 text-[11px] font-mono uppercase tracking-wider text-muted-foreground/60 transition-colors hover:text-primary group"
-            >
-              <Plus
-                size={12}
-                className="group-hover:rotate-90 transition-transform duration-300"
-              />
-              Join a project
-            </Link>
           </>
         )}
 
-        <SectionLabel>Tools</SectionLabel>
-        <SidebarLink icon={User} label="Profile" to="/dashboard/profile" />
+        <Link
+          to="/dashboard/projects?tab=available"
+          onClick={onNavigate}
+          className="mx-3 mt-3 flex items-center gap-2 py-1 text-[11px] font-mono uppercase tracking-wider text-muted-foreground/60 transition-colors hover:text-primary group"
+        >
+          <Plus
+            size={12}
+            className="group-hover:rotate-90 transition-transform duration-300"
+          />
+          Join a project
+        </Link>
 
         {isLead && (
           <>

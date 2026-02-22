@@ -2,8 +2,16 @@ import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTheme } from "next-themes";
 import {
-  LayoutDashboard, FolderOpen, User, Monitor, Layers,
-  ShieldCheck, Sun, Moon, LogOut, ArrowRight,
+  LayoutDashboard,
+  FolderOpen,
+  User,
+  Monitor,
+  Layers,
+  ShieldCheck,
+  Sun,
+  Moon,
+  LogOut,
+  ArrowRight,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useStore } from "@/lib/store";
@@ -29,15 +37,14 @@ export default function CommandPalette({ open, onOpenChange }) {
 
   const isLead = currentUser?.role === "TEAM_LEAD";
   const joinedProjects = getUserJoinedProjects(currentUser?.id, store);
-  const managedProjects = isLead
-    ? getUserManagedProjects(currentUser?.id, store)
-    : [];
+  const managedProjects =
+    isLead ? getUserManagedProjects(currentUser?.id, store) : [];
 
   // Merge joined + managed, deduplicate
   const allMyProjects = [
     ...joinedProjects,
     ...managedProjects.filter(
-      (p) => !joinedProjects.some((j) => j.id === p.id)
+      (p) => !joinedProjects.some((j) => j.id === p.id),
     ),
   ];
 
@@ -55,29 +62,35 @@ export default function CommandPalette({ open, onOpenChange }) {
 
         {/* Navigation */}
         <CommandGroup heading="Navigation">
-          <CommandItem onSelect={() => run(() => navigate("/dashboard/overview"))}>
+          <CommandItem
+            onSelect={() => run(() => navigate("/dashboard/overview"))}
+          >
             <LayoutDashboard size={14} className="mr-2 text-muted-foreground" />
             Go to Overview
           </CommandItem>
-          <CommandItem onSelect={() => run(() => navigate("/dashboard/projects"))}>
+          <CommandItem
+            onSelect={() => run(() => navigate("/dashboard/projects"))}
+          >
             <FolderOpen size={14} className="mr-2 text-muted-foreground" />
             Go to Projects
           </CommandItem>
-          <CommandItem onSelect={() => run(() => navigate("/dashboard/profile"))}>
-            <User size={14} className="mr-2 text-muted-foreground" />
-            Go to Profile
-          </CommandItem>
           {isLead && (
             <>
-              <CommandItem onSelect={() => run(() => navigate("/admin/overview"))}>
+              <CommandItem
+                onSelect={() => run(() => navigate("/admin/overview"))}
+              >
                 <Monitor size={14} className="mr-2 text-muted-foreground" />
                 Go to System
               </CommandItem>
-              <CommandItem onSelect={() => run(() => navigate("/admin/projects"))}>
+              <CommandItem
+                onSelect={() => run(() => navigate("/admin/projects"))}
+              >
                 <Layers size={14} className="mr-2 text-muted-foreground" />
                 Go to All Projects
               </CommandItem>
-              <CommandItem onSelect={() => run(() => navigate("/admin/security"))}>
+              <CommandItem
+                onSelect={() => run(() => navigate("/admin/security"))}
+              >
                 <ShieldCheck size={14} className="mr-2 text-muted-foreground" />
                 Go to Security
               </CommandItem>
@@ -93,9 +106,14 @@ export default function CommandPalette({ open, onOpenChange }) {
               {allMyProjects.map((p) => (
                 <CommandItem
                   key={p.id}
-                  onSelect={() => run(() => navigate(`/dashboard/projects/${p.id}`))}
+                  onSelect={() =>
+                    run(() => navigate(`/dashboard/projects/${p.id}`))
+                  }
                 >
-                  <ArrowRight size={14} className="mr-2 text-muted-foreground" />
+                  <ArrowRight
+                    size={14}
+                    className="mr-2 text-muted-foreground"
+                  />
                   Open {p.name}
                 </CommandItem>
               ))}
@@ -111,22 +129,10 @@ export default function CommandPalette({ open, onOpenChange }) {
               run(() => setTheme(theme === "dark" ? "light" : "dark"))
             }
           >
-            {theme === "dark" ? (
+            {theme === "dark" ?
               <Sun size={14} className="mr-2 text-muted-foreground" />
-            ) : (
-              <Moon size={14} className="mr-2 text-muted-foreground" />
-            )}
+            : <Moon size={14} className="mr-2 text-muted-foreground" />}
             Toggle Dark Mode
-          </CommandItem>
-          <CommandItem
-            onSelect={() => run(() => store.setViewMode("simple"))}
-          >
-            Switch to Simple View
-          </CommandItem>
-          <CommandItem
-            onSelect={() => run(() => store.setViewMode("detailed"))}
-          >
-            Switch to Detailed View
           </CommandItem>
           <CommandItem
             onSelect={() =>

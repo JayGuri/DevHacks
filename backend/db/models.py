@@ -42,6 +42,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
     role = Column(String(20), nullable=False, default="CONTRIBUTOR")  # TEAM_LEAD | CONTRIBUTOR
+    subscription_tier = Column(String(10), nullable=False, default="FREE")  # FREE | PRO
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
     # Relationships

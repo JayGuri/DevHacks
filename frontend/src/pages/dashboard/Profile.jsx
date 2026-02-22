@@ -36,6 +36,7 @@ import {
   cn,
 } from "@/lib/utils";
 import { getUserProjectRole } from "@/lib/projectUtils";
+import { useFeatureGate } from "@/hooks/useFeatureGate";
 import AppLayout from "@/components/layout/AppLayout";
 import StatCard from "@/components/dashboard/StatCard";
 import RoleBadge from "@/components/dashboard/RoleBadge";
@@ -73,7 +74,8 @@ function SortableHead({ label, sortKey, current, dir, onSort }) {
 
 export default function Profile() {
   const { currentUser } = useAuth();
-  const viewMode = useStore((s) => s.viewMode);
+  const { isTeamLead } = useFeatureGate();
+
   const store = useStore();
   const navigate = useNavigate();
 
@@ -224,7 +226,8 @@ export default function Profile() {
               </span>
             </div>
             <div className="mt-2 flex flex-wrap gap-2">
-              {hasHighTrust && (
+              {/* "High Trust" is server-internal — only team leads can see it */}
+              {isTeamLead && hasHighTrust && (
                 <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
                   🛡 High Trust
                 </Badge>
@@ -245,123 +248,126 @@ export default function Profile() {
       </Card>
 
       {/* Section B — Stats */}
-      <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard
-          label="Projects"
-          value={joinedProjects.length}
-          icon={FolderOpen}
-        />
-        <StatCard label="Rounds" value={totalRoundsAll} icon={Hash} />
-        <StatCard
-          label="Gradient Updates"
-          value={totalUpdates}
-          icon={Activity}
-        />
-        <StatCard
-          label="Uptime"
-          value={
-            rows.length > 0 ?
-              formatPercent(
-                rows.reduce((s, r) => s + r.uptime, 0) / rows.length,
-              )
-            : "0%"
-          }
-          icon={Clock}
-        />
-      </div>
+      {isTeamLead && (
+        <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+          <StatCard label="Rounds" value={totalRoundsAll} icon={Hash} />
+          <StatCard
+            label="Gradient Updates"
+            value={totalUpdates}
+            icon={Activity}
+          />
+          <StatCard
+            label="Uptime"
+            value={
+              rows.length > 0 ?
+                formatPercent(
+                  rows.reduce((s, r) => s + r.uptime, 0) / rows.length,
+                )
+              : "0%"
+            }
+            icon={Clock}
+          />
+        </div>
+      )}
 
-      {/* Section C — Per-project table */}
-      <h3 className="mb-3 font-display text-lg font-semibold">
-        Project Contributions
-      </h3>
-      <div className="mb-6 overflow-x-auto rounded-md border border-border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <SortableHead
-                label="Project"
-                sortKey="project"
-                current={sortKey}
-                dir={sortDir}
-                onSort={handleSort}
-              />
-              <TableHead>Node</TableHead>
-              <TableHead>Project Role</TableHead>
-              <SortableHead
-                label="Rounds"
-                sortKey="rounds"
-                current={sortKey}
-                dir={sortDir}
-                onSort={handleSort}
-              />
-              <SortableHead
-                label="Avg Trust"
-                sortKey="trust"
-                current={sortKey}
-                dir={sortDir}
-                onSort={handleSort}
-              />
-              <SortableHead
-                label="Uptime%"
-                sortKey="uptime"
-                current={sortKey}
-                dir={sortDir}
-                onSort={handleSort}
-              />
-              <TableHead>Status</TableHead>
-              <TableHead>View</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {sorted.map((r) => (
-              <TableRow key={r.projectId}>
-                <TableCell className="font-medium">{r.project}</TableCell>
-                <TableCell>
-                  <Badge variant="outline" className="mono-data">
-                    {r.nodeId}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge
-                    variant="outline"
-                    className={cn(
-                      r.projectRole === "lead" ?
-                        "border-cyan-500 text-cyan-600 dark:text-cyan-400"
-                      : "",
-                    )}
-                  >
-                    {r.projectRole}
-                  </Badge>
-                </TableCell>
-                <TableCell className="mono-data">{r.rounds}</TableCell>
-                <TableCell className="mono-data">
-                  {formatPercent(r.trust * 100)}
-                </TableCell>
-                <TableCell className="mono-data">
-                  {formatPercent(r.uptime)}
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline">{r.status}</Badge>
-                </TableCell>
-                <TableCell>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      navigate(`/dashboard/projects/${r.projectId}`)
-                    }
-                  >
-                    View
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+      {/* Section C — Per-project table (Team Lead only) */}
+      {/* Contributors must not see cross-project node IDs or per-project join data */}
+      {isTeamLead && (
+        <>
+          <h3 className="mb-3 font-display text-lg font-semibold">
+            Project Contributions
+          </h3>
+          <div className="mb-6 overflow-x-auto rounded-md border border-border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <SortableHead
+                    label="Project"
+                    sortKey="project"
+                    current={sortKey}
+                    dir={sortDir}
+                    onSort={handleSort}
+                  />
+                  <TableHead>Node</TableHead>
+                  <TableHead>Project Role</TableHead>
+                  <SortableHead
+                    label="Rounds"
+                    sortKey="rounds"
+                    current={sortKey}
+                    dir={sortDir}
+                    onSort={handleSort}
+                  />
+                  <SortableHead
+                    label="Avg Trust"
+                    sortKey="trust"
+                    current={sortKey}
+                    dir={sortDir}
+                    onSort={handleSort}
+                  />
+                  <SortableHead
+                    label="Uptime%"
+                    sortKey="uptime"
+                    current={sortKey}
+                    dir={sortDir}
+                    onSort={handleSort}
+                  />
+                  <TableHead>Status</TableHead>
+                  <TableHead>View</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sorted.map((r) => (
+                  <TableRow key={r.projectId}>
+                    <TableCell className="font-medium">{r.project}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="mono-data">
+                        {r.nodeId}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          r.projectRole === "lead" ?
+                            "border-cyan-500 text-cyan-600 dark:text-cyan-400"
+                          : "",
+                        )}
+                      >
+                        {r.projectRole}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="mono-data">{r.rounds}</TableCell>
+                    <TableCell className="mono-data">
+                      {formatPercent(r.trust * 100)}
+                    </TableCell>
+                    <TableCell className="mono-data">
+                      {formatPercent(r.uptime)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline">{r.status}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          navigate(`/dashboard/projects/${r.projectId}`)
+                        }
+                      >
+                        View
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </>
+      )}
 
-      {/* Section D — Trust history chart (detailed) */}
-      {viewMode === "detailed" && joinedProjects.length > 0 && (
+      {/* Section D — Trust history chart (detailed) — TEAM LEAD only */}
+      {/* Trust scores are server-internal metrics; contributors must never see them */}
+      {isTeamLead && joinedProjects.length > 0 && (
         <Card className="mb-6">
           <CardContent className="p-4">
             <p className="metric-label mb-2 text-muted-foreground">
@@ -403,8 +409,8 @@ export default function Profile() {
         </Card>
       )}
 
-      {/* Section E — Activity timeline (detailed) */}
-      {viewMode === "detailed" && userActivity.length > 0 && (
+      {/* Section E — Activity timeline (detailed, Team Lead only) */}
+      {isTeamLead && userActivity.length > 0 && (
         <div className="mb-6">
           <h3 className="mb-3 font-display text-lg font-semibold">
             Activity Timeline
@@ -433,19 +439,22 @@ export default function Profile() {
         </div>
       )}
 
-      {/* Bottom callout */}
-      <Card className="bg-muted">
-        <CardContent className="p-4">
-          <p className="text-sm text-muted-foreground">
-            You contributed{" "}
-            <span className="font-medium text-foreground">
-              {totalUpdates.toLocaleString()}
-            </span>{" "}
-            gradient updates across {joinedProjects.length} projects, shielding
-            60,000+ training samples from direct exposure.
-          </p>
-        </CardContent>
-      </Card>
+      {/* Bottom callout — Team Lead only */}
+      {isTeamLead && (
+        <Card className="bg-muted">
+          <CardContent className="p-4">
+            <p className="text-sm text-muted-foreground">
+              You contributed{" "}
+              <span className="font-medium text-foreground">
+                {totalUpdates.toLocaleString()}
+              </span>{" "}
+              gradient updates across {joinedProjects.length} project
+              {joinedProjects.length !== 1 ? "s" : ""}, shielding 60,000+
+              training samples from direct exposure.
+            </p>
+          </CardContent>
+        </Card>
+      )}
     </AppLayout>
   );
 }

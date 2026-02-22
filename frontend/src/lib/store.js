@@ -1,7 +1,5 @@
 import { create } from "zustand";
 
-const savedMode = localStorage.getItem("arfl-view-mode") || "simple";
-
 export const useStore = create((set) => ({
   // ── Auth ────────────────────────────────────────────────
   user: null,
@@ -19,12 +17,9 @@ export const useStore = create((set) => ({
   fetchedNotifications: [],
   setFetchedNotifications: (n) => set({ fetchedNotifications: n }),
 
-  // ── View mode (persisted to localStorage) ──────────────
-  viewMode: savedMode,
-  setViewMode: (m) => {
-    localStorage.setItem("arfl-view-mode", m);
-    set({ viewMode: m });
-  },
+  // ── View mode — always "detailed", no toggle ──────────
+  viewMode: "detailed",
+  setViewMode: () => {}, // no-op, kept for API compatibility
 
   // ── Active project ─────────────────────────────────────
   activeProjectId: null,
