@@ -14,6 +14,7 @@ import AdminProjects from "@/pages/admin/AdminProjects";
 import AdminProjectDetail from "@/pages/admin/AdminProjectDetail";
 import AdminUsers from "@/pages/admin/AdminUsers";
 import JoinRequests from "@/pages/admin/JoinRequests";
+import Subscription from "@/pages/admin/Subscription";
 import ProtectedRoute from "@/components/auth/ProtectedRoute";
 import CommandPalette from "@/components/layout/CommandPalette";
 import ErrorBoundary from "@/components/ui/ErrorBoundary";
@@ -62,15 +63,31 @@ export default function App() {
           <Routes location={location} key={location.pathname}>
             {/* Public */}
             <Route path="/" element={<Navigate to="/login" replace />} />
-            <Route path="/login" element={<AnimatedPage><Login /></AnimatedPage>} />
-            <Route path="/signup" element={<AnimatedPage><Signup /></AnimatedPage>} />
+            <Route
+              path="/login"
+              element={
+                <AnimatedPage>
+                  <Login />
+                </AnimatedPage>
+              }
+            />
+            <Route
+              path="/signup"
+              element={
+                <AnimatedPage>
+                  <Signup />
+                </AnimatedPage>
+              }
+            />
 
             {/* Dashboard */}
             <Route
               path="/dashboard/overview"
               element={
                 <ProtectedRoute>
-                  <AnimatedPage><Overview /></AnimatedPage>
+                  <AnimatedPage>
+                    <Overview />
+                  </AnimatedPage>
                 </ProtectedRoute>
               }
             />
@@ -78,7 +95,9 @@ export default function App() {
               path="/dashboard/projects"
               element={
                 <ProtectedRoute>
-                  <AnimatedPage><Projects /></AnimatedPage>
+                  <AnimatedPage>
+                    <Projects />
+                  </AnimatedPage>
                 </ProtectedRoute>
               }
             />
@@ -86,7 +105,9 @@ export default function App() {
               path="/dashboard/projects/:id"
               element={
                 <ProtectedRoute>
-                  <AnimatedPage><ProjectDetail /></AnimatedPage>
+                  <AnimatedPage>
+                    <ProjectDetail />
+                  </AnimatedPage>
                 </ProtectedRoute>
               }
             />
@@ -94,7 +115,9 @@ export default function App() {
               path="/dashboard/profile"
               element={
                 <ProtectedRoute>
-                  <AnimatedPage><Profile /></AnimatedPage>
+                  <AnimatedPage>
+                    <Profile />
+                  </AnimatedPage>
                 </ProtectedRoute>
               }
             />
@@ -104,7 +127,9 @@ export default function App() {
               path="/admin/overview"
               element={
                 <ProtectedRoute requiredRole="TEAM_LEAD">
-                  <AnimatedPage><AdminOverview /></AnimatedPage>
+                  <AnimatedPage>
+                    <AdminOverview />
+                  </AnimatedPage>
                 </ProtectedRoute>
               }
             />
@@ -112,7 +137,9 @@ export default function App() {
               path="/admin/projects"
               element={
                 <ProtectedRoute requiredRole="TEAM_LEAD">
-                  <AnimatedPage><AdminProjects /></AnimatedPage>
+                  <AnimatedPage>
+                    <AdminProjects />
+                  </AnimatedPage>
                 </ProtectedRoute>
               }
             />
@@ -120,7 +147,9 @@ export default function App() {
               path="/admin/projects/:id"
               element={
                 <ProtectedRoute requiredRole="TEAM_LEAD">
-                  <AnimatedPage><AdminProjectDetail /></AnimatedPage>
+                  <AnimatedPage>
+                    <AdminProjectDetail />
+                  </AnimatedPage>
                 </ProtectedRoute>
               }
             />
@@ -128,7 +157,9 @@ export default function App() {
               path="/admin/users"
               element={
                 <ProtectedRoute requiredRole="TEAM_LEAD">
-                  <AnimatedPage><AdminUsers /></AnimatedPage>
+                  <AnimatedPage>
+                    <AdminUsers />
+                  </AnimatedPage>
                 </ProtectedRoute>
               }
             />
@@ -136,13 +167,32 @@ export default function App() {
               path="/admin/requests"
               element={
                 <ProtectedRoute requiredRole="TEAM_LEAD">
-                  <AnimatedPage><JoinRequests /></AnimatedPage>
+                  <AnimatedPage>
+                    <JoinRequests />
+                  </AnimatedPage>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/billing"
+              element={
+                <ProtectedRoute requiredRole="TEAM_LEAD">
+                  <AnimatedPage>
+                    <Subscription />
+                  </AnimatedPage>
                 </ProtectedRoute>
               }
             />
 
             {/* Catch-all */}
-            <Route path="*" element={<AnimatedPage><NotFound /></AnimatedPage>} />
+            <Route
+              path="*"
+              element={
+                <AnimatedPage>
+                  <NotFound />
+                </AnimatedPage>
+              }
+            />
           </Routes>
         </AnimatePresence>
       </ErrorBoundary>

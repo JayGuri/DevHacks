@@ -312,22 +312,20 @@ export default function AdminProjectDetail() {
             {/* Server View */}
             {defaultTab === "server" && (
               <div className="space-y-6">
-                <div className="mb-6">
-                  <div className="flex items-center justify-between mb-3">
+                <div className="mb-4 sm:mb-6">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
                     <div>
-                      <h2 className="font-display text-xl">Network Topology</h2>
-                      <p className="text-xs text-muted-foreground font-mono mt-0.5">
+                      <h2 className="font-display text-lg sm:text-xl">Network Topology</h2>
+                      <p className="text-[10px] sm:text-xs text-muted-foreground font-mono mt-0.5">
                         Live 3D view — drag to orbit · scroll to zoom · hover
                         nodes for details
                       </p>
                     </div>
-                    <Badge variant="outline" className="font-mono text-xs">
+                    <Badge variant="outline" className="font-mono text-[10px] sm:text-xs w-fit">
                       {fl.nodes.filter((n) => !n.isBlocked).length} active nodes
                     </Badge>
                   </div>
-                  <div className="rounded-xl overflow-hidden border border-border">
-                    <NetworkTopology projectId={id} />
-                  </div>
+                  <NetworkTopology projectId={id} />
                 </div>
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                   <Card>
