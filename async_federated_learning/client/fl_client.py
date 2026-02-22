@@ -432,8 +432,8 @@ class WSClient:
             try:
                 self.ws = await websockets.connect(
                     url,
-                    ping_interval=20,
-                    ping_timeout=20,
+                    ping_interval=None,
+                    ping_timeout=None,
                     max_size=100 * 1024 * 1024,  # 100MB max message
                 )
                 self._connected = True
@@ -487,8 +487,10 @@ class WSClient:
         try:
             async for message in self.ws:
                 try:
+                    logger.info("Received raw message string of length %d", len(message))
                     data = json.loads(message)
                     msg_type = data.get("type", "")
+                    logger.info("Decoded message type: %s", msg_type)
 
                     if msg_type == "global_model":
                         logger.info(
@@ -658,6 +660,7 @@ async def main():
     async def on_global_model(data: dict):
         nonlocal current_global_weights, current_global_round, data_loader, assigned_chunk_id
         
+        logger.info("on_global_model started!")
         # Initialize DataLoader if not already done using the server-assigned chunk
         server_chunk = data.get("assigned_chunk")
         if data_loader is None and server_chunk is not None:
@@ -672,11 +675,11 @@ async def main():
                     partition_id=assigned_chunk_id,
                     batch_size=32,
                 )
-                data_loader = loader.get_dataloader()
+                data_loader = await asyncio.to_thread(loader.get_dataloader)
                 logger.info("Data loaded via MongoPartitionLoader using assigned chunk %d", assigned_chunk_id)
             else:
                 leaf_loader = LEAFLoader(dataset, node_index=assigned_chunk_id, total_nodes=total_nodes, batch_size=32)
-                data_loader = leaf_loader.get_dataloader()
+                data_loader = await asyncio.to_thread(leaf_loader.get_dataloader)
                 logger.info("Data loaded via LEAFLoader using assigned chunk %d", assigned_chunk_id)
         
         weights_b64 = data.get("weights", "")
@@ -715,6 +718,18 @@ async def main():
         await asyncio.wait_for(new_model_event.wait(), timeout=60.0)
     except asyncio.TimeoutError:
         logger.warning("Timeout waiting for initial global model. Using local init.")
+        
+    if data_loader is None:
+        logger.info("Initializing local data loader due to missing or delayed server chunk assignment...")
+        assigned_chunk_id = assigned_chunk_id if assigned_chunk_id is not None else data_partition
+        _mongo_uri = os.environ.get("MONGO_URI", "")
+        if _mongo_uri:
+            from client.mongo_loader import MongoPartitionLoader
+            loader = MongoPartitionLoader(mongo_uri=_mongo_uri, partition_id=assigned_chunk_id, batch_size=32)
+            data_loader = await asyncio.to_thread(loader.get_dataloader)
+        else:
+            leaf_loader = LEAFLoader(dataset, node_index=assigned_chunk_id, total_nodes=total_nodes, batch_size=32)
+            data_loader = await asyncio.to_thread(leaf_loader.get_dataloader)
 
     new_model_event.clear()
 
@@ -749,6 +764,11 @@ async def main():
 
             # Train
             result = await trainer.train(data_loader)
+
+            staleness_delay = float(os.environ.get("STALENESS_DELAY", "0.0"))
+            if staleness_delay > 0:
+                logger.info("[%s] Simulating staleness: sleeping for %ss", client_id, staleness_delay)
+                await asyncio.sleep(staleness_delay)
 
             # Apply DP
             processed_diff = privacy_engine.process(result["weight_diff"])
