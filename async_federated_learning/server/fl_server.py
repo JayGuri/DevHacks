@@ -138,7 +138,7 @@ async def heartbeat_checker(
 
             # Release chunk on timeout (same as disconnect)
             if chunk_manager is not None:
-                released = chunk_manager.release_chunk(client_id)
+                released = await asyncio.to_thread(chunk_manager.release_chunk, client_id)
                 if released is not None:
                     logger.info(
                         "[SERVER] Timeout: %s → chunk_%d released → available again",
@@ -416,7 +416,8 @@ async def handle_websocket(
     # Step 2b: Chunk assignment (if ChunkManager available)
     assigned_chunk = -1
     if chunk_manager is not None:
-        success, assigned_chunk, msg = chunk_manager.assign_chunk(
+        success, assigned_chunk, msg = await asyncio.to_thread(
+            chunk_manager.assign_chunk,
             client_id=client_id, dataset=task,
         )
         if not success:
@@ -426,7 +427,7 @@ async def handle_websocket(
             await websocket.close(code=1008, reason=msg)
             return
         # Log chunk load details (sample_count filled later by client/loader)
-        chunk_info = chunk_manager.get_chunk_info(assigned_chunk)
+        chunk_info = await asyncio.to_thread(chunk_manager.get_chunk_info, assigned_chunk)
         if chunk_info:
             logger.info(
                 "[SERVER] Chunk %d loaded from MongoDB: %d samples (%s)",
@@ -442,7 +443,7 @@ async def handle_websocket(
                 chunk_info.get("loaded_from", "mongodb"),
             )
         # Duplicate validation
-        dup_errors = chunk_manager.validate_no_duplicates()
+        dup_errors = await asyncio.to_thread(chunk_manager.validate_no_duplicates)
         for err in dup_errors:
             logger.error("[SERVER] %s", err)
 
@@ -616,7 +617,7 @@ async def handle_websocket(
         # ── Release chunk back to available pool ──
         released_chunk = None
         if chunk_manager is not None and is_active_connection:
-            released_chunk = chunk_manager.release_chunk(client_id)
+            released_chunk = await asyncio.to_thread(chunk_manager.release_chunk, client_id)
             if released_chunk is not None:
                 logger.info(
                     "[SERVER] %s disconnected → chunk_%d released → available again",
