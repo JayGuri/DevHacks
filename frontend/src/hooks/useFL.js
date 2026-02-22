@@ -44,13 +44,16 @@ export default function useFL(projectId) {
   const nodesByProject = useStore((s) => s.nodesByProject);
   const roundsByProject = useStore((s) => s.roundsByProject);
   const setNodes = useStore((s) => s.setNodes);
-  const setAllNodes = useStore((s) => s.setAllNodes); // Make sure this is in store.js
+  const setAllNodes = useStore((s) => s.setAllNodes);
   const appendRound = useStore((s) => s.appendRound);
   const setMethod = useStore((s) => s.setMethod);
   const pushActivity = useStore((s) => s.pushActivity);
   const storeBlockNode = useStore((s) => s.blockNode);
   const storeUnblockNode = useStore((s) => s.unblockNode);
   const pushNotification = useStore((s) => s.pushNotification);
+  const setTrustReport = useStore((s) => s.setTrustReport);
+  const updateNodeTrustScores = useStore((s) => s.updateNodeTrustScores);
+  const setGlobalModel = useStore((s) => s.setGlobalModel);
 
   const nodes = useMemo(
     () => nodesByProject[projectId] || [],
@@ -73,6 +76,7 @@ export default function useFL(projectId) {
   const [trainingStatus, setTrainingStatus] = useState("idle");
   const [loading, setLoading] = useState(!USE_MOCK);
   const [aggTriggerTimes, setAggTriggerTimes] = useState([]);
+  const [globalModelInfo, setGlobalModelInfo] = useState(null);
 
   const intervalRef = useRef(null);
   const currentRoundRef = useRef(0);
@@ -263,6 +267,40 @@ export default function useFL(projectId) {
             currentRoundRef.current = data.status.currentRound || 0;
           }
           setLoading(false);
+
+        } else if (eventType === "trust_report") {
+          // Store the full trust report for components that need it
+          setTrustReport(projectId, data);
+          // Merge trust scores back into the per-node state
+          if (data.trust_scores) {
+            updateNodeTrustScores(projectId, data.trust_scores);
+          }
+
+        } else if (eventType === "global_model") {
+          // Track global model metadata (weights are not stored in the browser)
+          const info = {
+            version: data.version,
+            roundNum: data.round_num,
+            assignedChunk: data.assigned_chunk,
+            personalizationAlpha: data.personalization_alpha,
+            timestamp: data.timestamp,
+          };
+          setGlobalModelInfo(info);
+          setGlobalModel(projectId, info);
+
+        } else if (eventType === "rejected") {
+          // This client's weight update was rejected by the Layer 1 gatekeeper
+          const normStr = typeof data.norm === "number" ? data.norm.toFixed(4) : data.norm;
+          const threshStr =
+            typeof data.threshold === "number" ? data.threshold.toFixed(4) : data.threshold;
+          toast.error(
+            `Weight update rejected: L2 norm ${normStr} exceeded threshold ${threshStr}`,
+          );
+          pushNotification({
+            type: "alert",
+            message: `Update rejected by gatekeeper (norm exceeded) — round ${data.round_num}`,
+            projectId,
+          });
         }
       } catch (err) {
         console.error("[WS] Parse error:", err);
@@ -371,6 +409,7 @@ export default function useFL(projectId) {
       currentRound,
       totalRounds: project?.config?.numRounds || 50,
       loading,
+      globalModelInfo,
       blockNode,
       unblockNode,
       setAggregationMethod: (method) => {
@@ -425,6 +464,7 @@ export default function useFL(projectId) {
     trainingStatus,
     loading,
     currentRound,
+    globalModelInfo,
     blockNode,
     unblockNode,
     setMethod,

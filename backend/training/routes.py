@@ -317,7 +317,7 @@ async def export_metrics(
 
 
 # --------------------------------------------------------------------------
-# WebSocket endpoint for frontend real-time events
+# WebSocket endpoint — dashboard viewers AND FL training clients
 # --------------------------------------------------------------------------
 
 @router.websocket("/ws")
@@ -325,24 +325,54 @@ async def websocket_endpoint(
     websocket: WebSocket,
     projectId: str = Query(...),
     token: str = Query(default=""),
+    clientId: str = Query(default=""),
+    task: str = Query(default=""),
 ):
-    """WebSocket for frontend clients to receive real-time training events.
+    """Unified WebSocket endpoint for two client types.
 
-    Connection: ws://backend/ws?projectId=<id>&token=<jwt>
+    Dashboard viewers (no clientId):
+      Connection: ws://backend/ws?projectId=<id>&token=<jwt>
+      Receive: round_complete, node_flagged, training_status, trust_report, global_model
 
-    Events pushed:
-      - round_complete: { metrics, nodes, ganttBlocks }
-      - node_flagged: { nodeId, displayId, reason, cosineDistance, trust }
-      - training_status: { status, currentRound, totalRounds }
+    FL training clients (clientId provided):
+      Connection: ws://backend/ws?projectId=<id>&clientId=<id>&task=<task>&token=<jwt>
+      Send:    weight_update  — local training result (base64 msgpack weights)
+      Receive: global_model   — aggregated model after each round
+               trust_report  — trust scores, rejected lists
+               rejected       — directed rejection message (Layer 1 gatekeeper)
+
+    Client limit: at most MAX_FL_CLIENTS (10) FL clients per project.
+    Connections beyond the limit are closed immediately with code 1008.
     """
+    import json
+    from training.fl_processor import get_fl_processor
+
+    is_fl_client = bool(clientId)
+
+    # --- Enforce FL client limit before accepting ---
+    if is_fl_client and ws_manager.get_fl_client_count(projectId) >= 10:
+        await websocket.accept()
+        await websocket.close(code=1008, reason="Client limit reached (max 10 FL clients)")
+        return
+
     await ws_manager.connect(websocket, projectId)
 
+    # Register as FL client (second limit check inside the lock)
+    if is_fl_client:
+        registered = await ws_manager.register_fl_client(clientId, projectId, websocket)
+        if not registered:
+            await ws_manager.disconnect(websocket, projectId)
+            await websocket.close(code=1008, reason="Client limit reached (max 10 FL clients)")
+            return
+
     try:
-        # Send initial status
         coordinator = get_coordinator(projectId)
-        if coordinator:
+        if not coordinator:
+            coordinator = create_coordinator(projectId, {}, ws_manager)
+
+        # Send initial state to dashboard viewers
+        if not is_fl_client:
             await ws_manager.send_personal(websocket, "training_status", coordinator.get_status())
-            # Send current nodes
             nodes = coordinator.node_manager.get_all_nodes_dict()
             if nodes:
                 await ws_manager.send_personal(websocket, "initial_state", {
@@ -351,18 +381,68 @@ async def websocket_endpoint(
                     "status": coordinator.get_status(),
                 })
 
-        # Keep connection alive — listen for client messages
+        # Keep connection alive — process incoming messages
         while True:
             try:
                 data = await websocket.receive_text()
-                # Client can send ping/pong or config updates
-                import json
                 msg = json.loads(data)
-                if msg.get("type") == "ping":
+                msg_type = msg.get("type")
+
+                if msg_type == "ping":
                     await websocket.send_text('{"event":"pong"}')
+
+                elif msg_type == "weight_update":
+                    await _handle_weight_update(
+                        websocket=websocket,
+                        project_id=projectId,
+                        msg=msg,
+                        coordinator=coordinator,
+                        task=task or msg.get("task", ""),
+                    )
+
             except WebSocketDisconnect:
                 break
             except Exception:
                 break
+
     finally:
+        if is_fl_client:
+            await ws_manager.unregister_fl_client(clientId, projectId)
         await ws_manager.disconnect(websocket, projectId)
+
+
+async def _handle_weight_update(
+    websocket,
+    project_id: str,
+    msg: dict,
+    coordinator,
+    task: str,
+) -> None:
+    """Process an incoming weight_update message through the defense pipeline.
+
+    Layer 1 (L2 Norm Gatekeeper) runs immediately — rejected updates receive a
+    `rejected` directed message and are dropped.  Updates that pass Layer 1 are
+    queued in the FLWeightProcessor pending list; Layer 2 (SABD) and aggregation
+    run at the next round boundary inside the coordinator's training loop.
+    """
+    import json
+    from training.fl_processor import get_fl_processor
+
+    client_id = msg.get("client_id", "unknown")
+    round_num = int(msg.get("round_num", 0))
+
+    processor = get_fl_processor(project_id, coordinator.config)
+    result = processor.process_weight_update(msg)
+
+    if result["status"] == "rejected_l1":
+        rejected_msg = processor.build_rejected_msg(
+            client_id=client_id,
+            task=task,
+            round_num=round_num,
+            norm=result["norm"],
+            threshold=result["threshold"],
+        )
+        try:
+            await websocket.send_text(json.dumps(rejected_msg))
+        except Exception:
+            pass
