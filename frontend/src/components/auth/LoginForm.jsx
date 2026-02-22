@@ -1,25 +1,20 @@
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { useNavigate, Link } from "react-router-dom";
-import { motion } from "framer-motion";
-import { Loader2 } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Loader2, Mail, Lock, AlertCircle, ArrowRight, Eye, EyeOff } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 
 export default function LoginForm() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [focusedField, setFocusedField] = useState(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   const {
     register,
@@ -45,97 +40,147 @@ export default function LoginForm() {
   }
 
   return (
-    <motion.div
-      initial={{ y: 24, opacity: 0 }}
-      animate={error ? { x: [-10, 10, -10, 10, 0], y: 0, opacity: 1 } : { y: 0, opacity: 1 }}
-      transition={{ duration: 0.35, ease: "easeOut" }}
-    >
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle className="text-display text-2xl">Sign In</CardTitle>
-        </CardHeader>
- 
-        <form onSubmit={handleSubmit(onSubmit)}>
-          <CardContent className="space-y-4">
-            {error && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                className="rounded-md bg-destructive/10 p-3 text-sm text-destructive"
-              >
-                {error}
-              </motion.div>
-            )}
- 
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <motion.div whileFocus={{ scale: 1.005 }}>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="lead@arfl.dev"
-                  className="transition-all focus:ring-2 focus:ring-primary/20"
-                  {...register("email", {
-                    required: "Email is required",
-                    pattern: {
-                      value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-                      message: "Enter a valid email",
-                    },
-                  })}
-                />
-              </motion.div>
-              {errors.email && (
-                <p className="text-xs text-destructive">
-                  {errors.email.message}
-                </p>
-              )}
+    <div className="w-full">
+      <div className="mb-6">
+        <h3 className="text-xl font-display font-bold text-foreground tracking-tight">Sign In</h3>
+        <p className="text-muted-foreground text-[12px] mt-1">Access the decentralized control core.</p>
+      </div>
+
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <AnimatePresence mode="wait">
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="flex items-center gap-2 rounded-lg bg-destructive/10 border border-destructive/20 p-2.5 text-[11px] text-destructive font-medium"
+            >
+              <AlertCircle size={14} />
+              {error}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="space-y-1.5">
+          <Label 
+            htmlFor="email" 
+            className={`text-[9px] font-mono tracking-widest uppercase transition-colors duration-300 ${focusedField === 'email' ? 'text-primary' : 'text-muted-foreground'}`}
+          >
+            Email Address
+          </Label>
+          <div className="relative group">
+            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground group-focus-within:text-primary transition-colors duration-300">
+              <Mail size={14} />
             </div>
- 
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <motion.div whileFocus={{ scale: 1.005 }}>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="••••••••"
-                  className="transition-all focus:ring-2 focus:ring-primary/20"
-                  {...register("password", {
-                    required: "Password is required",
-                    minLength: {
-                      value: 6,
-                      message: "Password must be at least 6 characters",
-                    },
-                  })}
-                />
-              </motion.div>
-              {errors.password && (
-                <p className="text-xs text-destructive">
-                  {errors.password.message}
-                </p>
-              )}
+            <Input
+              id="email"
+              type="email"
+              placeholder="lead@arfl.dev"
+              onFocus={() => setFocusedField('email')}
+              onBlur={() => setFocusedField(null)}
+              className="pl-9 bg-background/50 border-white/5 focus:border-primary/50 focus:ring-primary/20 transition-all duration-300 h-10 text-sm"
+              {...register("email", {
+                required: "Email is required",
+                pattern: {
+                  value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+                  message: "Enter a valid email",
+                },
+              })}
+            />
+          </div>
+          {errors.email && (
+            <motion.p 
+              initial={{ opacity: 0, x: -5 }} 
+              animate={{ opacity: 1, x: 0 }}
+              className="text-[9px] text-destructive font-medium uppercase tracking-wider"
+            >
+              {errors.email.message}
+            </motion.p>
+          )}
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="flex justify-between items-end">
+            <Label 
+              htmlFor="password" 
+              className={`text-[9px] font-mono tracking-widest uppercase transition-colors duration-300 ${focusedField === 'password' ? 'text-primary' : 'text-muted-foreground'}`}
+            >
+              Access Secret
+            </Label>
+            <Link to="#" className="text-[9px] text-primary/60 hover:text-primary transition-colors font-mono tracking-wider">
+              RECOVER KEY
+            </Link>
+          </div>
+          <div className="relative group">
+            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground group-focus-within:text-primary transition-colors duration-300">
+              <Lock size={14} />
             </div>
-          </CardContent>
- 
-          <CardFooter className="flex flex-col gap-3">
-            <Button type="submit" className="w-full" disabled={submitting}>
+            <Input
+              id="password"
+              type={showPassword ? "text" : "password"}
+              placeholder="••••••••"
+              onFocus={() => setFocusedField('password')}
+              onBlur={() => setFocusedField(null)}
+              className="pl-9 pr-10 bg-background/50 border-white/5 focus:border-primary/50 focus:ring-primary/20 transition-all duration-300 h-10 text-sm"
+              {...register("password", {
+                required: "Password is required",
+                minLength: {
+                  value: 6,
+                  message: "Minimum 6 characters",
+                },
+              })}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword(!showPassword)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-primary transition-colors"
+            >
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          {errors.password && (
+            <motion.p 
+              initial={{ opacity: 0, x: -5 }} 
+              animate={{ opacity: 1, x: 0 }}
+              className="text-[9px] text-destructive font-medium uppercase tracking-wider"
+            >
+              {errors.password.message}
+            </motion.p>
+          )}
+        </div>
+
+        <div className="pt-2">
+          <Button 
+            type="submit" 
+            className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-display font-bold py-5 group relative overflow-hidden transition-all duration-300 active:scale-[0.98]" 
+            disabled={submitting}
+          >
+            <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
+            <span className="relative flex items-center justify-center gap-2 text-sm">
               {submitting ? (
                 <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Signing in…
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  AUTHENTICATING...
                 </>
               ) : (
-                "Sign In"
+                <>
+                  INITIALIZE SESSION
+                  <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />
+                </>
               )}
-            </Button>
-            <p className="text-sm text-muted-foreground">
-              Don&apos;t have an account?{" "}
-              <Link to="/signup" className="text-primary hover:underline">
-                Sign up
-              </Link>
-            </p>
-          </CardFooter>
-        </form>
-      </Card>
-    </motion.div>
+            </span>
+          </Button>
+        </div>
+
+        <div className="text-center pt-1">
+          <p className="text-[11px] text-muted-foreground">
+            UNAUTHORIZED ACCESS IS PROHIBITED.{" "}
+            <Link to="/signup" className="text-primary hover:underline font-bold">
+              JOIN NETWORK
+            </Link>
+          </p>
+        </div>
+      </form>
+    </div>
   );
 }
