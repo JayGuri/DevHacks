@@ -220,6 +220,32 @@ export const useStore = create((set) => ({
       notifications: s.notifications.map((n) => ({ ...n, read: true })),
     })),
 
+  // ── Trust report per project (from server trust_report WS message) ──
+  trustReportByProject: {},
+  setTrustReport: (projectId, report) =>
+    set((s) => ({
+      trustReportByProject: { ...s.trustReportByProject, [projectId]: report },
+    })),
+
+  // Update per-node trust scores in nodesByProject from a trust_scores map
+  updateNodeTrustScores: (projectId, trustScores) =>
+    set((s) => {
+      const nodes = s.nodesByProject[projectId] || [];
+      const updated = nodes.map((n) => {
+        const newTrust = trustScores[n.nodeId] ?? trustScores[n.displayId];
+        if (newTrust === undefined) return n;
+        return { ...n, trust: newTrust };
+      });
+      return { nodesByProject: { ...s.nodesByProject, [projectId]: updated } };
+    }),
+
+  // ── Global model metadata per project (from server global_model WS message) ─
+  globalModelByProject: {},
+  setGlobalModel: (projectId, modelInfo) =>
+    set((s) => ({
+      globalModelByProject: { ...s.globalModelByProject, [projectId]: modelInfo },
+    })),
+
   // ── Extra projects (created via admin dialog) ─────────
   extraProjects: [],
   addProject: (project) =>
