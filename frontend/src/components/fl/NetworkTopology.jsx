@@ -12,7 +12,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import useFL from "@/hooks/useFL";
 import { useStore } from "@/lib/store";
 
-/* ─── Node config ──────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   CONFIG
+   ═══════════════════════════════════════════════════════════════ */
 const NODE_CONFIG = {
   ACTIVE: {
     color: "#10b981",
@@ -62,7 +64,9 @@ const ORBIT_RADIUS = 4.5;
 const SERVER_SIZE = 0.55;
 const CLIENT_SIZE = 0.28;
 
-/* ─── Position calculator ──────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   POSITION CALCULATOR  (Fibonacci sphere layout)
+   ═══════════════════════════════════════════════════════════════ */
 function computeNodePositions(nodes) {
   const phi = Math.PI * (3 - Math.sqrt(5));
   const positions = new Map();
@@ -79,7 +83,11 @@ function computeNodePositions(nodes) {
   return positions;
 }
 
-/* ─── Animated Edge ────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   3D COMPONENTS  (inside <Canvas>)
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── AnimatedEdge ─────────────────────────────────────────── */
 function AnimatedEdge({ start, end, status, active, nodeId, isHovered }) {
   const packetRef = useRef(null);
   const progressRef = useRef(Math.random());
@@ -130,7 +138,8 @@ function AnimatedEdge({ start, end, status, active, nodeId, isHovered }) {
       progressRef.current = (progressRef.current + delta * speed) % 1.0;
       const pt = curve.getPoint(progressRef.current);
       packetRef.current.position.set(pt.x, pt.y, pt.z);
-      const s = packetSize * (1 + Math.sin(state.clock.elapsedTime * 10) * 0.2);
+      const s =
+        packetSize * (1 + Math.sin(state.clock.elapsedTime * 10) * 0.2);
       packetRef.current.scale.setScalar(s);
     }
   });
@@ -159,8 +168,8 @@ function AnimatedEdge({ start, end, status, active, nodeId, isHovered }) {
   );
 }
 
-/* ─── Server Node ──────────────────────────────────────────── */
-function ServerNode({ position, onHover, onUnhover, hovered }) {
+/* ─── ServerNode ───────────────────────────────────────────── */
+function ServerNode({ position, onHover, onUnhover, hovered, onClick }) {
   const meshRef = useRef();
   const ringRef = useRef();
   const glowRef = useRef();
@@ -181,11 +190,7 @@ function ServerNode({ position, onHover, onUnhover, hovered }) {
 
   return (
     <group position={position}>
-      <mesh
-        ref={meshRef}
-        onPointerEnter={onHover}
-        onPointerLeave={onUnhover}
-      >
+      <mesh ref={meshRef} onPointerEnter={onHover} onPointerLeave={onUnhover} onClick={onClick}>
         <sphereGeometry args={[SERVER_SIZE, 32, 32]} />
         <meshStandardMaterial
           color={NODE_CONFIG.SERVER.color}
@@ -248,8 +253,8 @@ function ServerNode({ position, onHover, onUnhover, hovered }) {
   );
 }
 
-/* ─── Client Node ──────────────────────────────────────────── */
-function ClientNode({ node, position, onHover, onUnhover, hovered }) {
+/* ─── ClientNode ───────────────────────────────────────────── */
+function ClientNode({ node, position, onHover, onUnhover, hovered, onClick }) {
   const meshRef = useRef();
   const glowRef = useRef();
   const config = NODE_CONFIG[node.status] || NODE_CONFIG.ACTIVE;
@@ -279,19 +284,13 @@ function ClientNode({ node, position, onHover, onUnhover, hovered }) {
 
   return (
     <group position={position}>
-      <mesh
-        ref={meshRef}
-        onPointerEnter={onHover}
-        onPointerLeave={onUnhover}
-      >
+      <mesh ref={meshRef} onPointerEnter={onHover} onPointerLeave={onUnhover} onClick={onClick}>
         <sphereGeometry args={[CLIENT_SIZE, 24, 24]} />
         <meshStandardMaterial
           color={config.color}
           emissive={config.emissive}
           emissiveIntensity={
-            hovered ? 1.0
-            : node.status === "BYZANTINE" ? 0.6
-            : 0.3
+            hovered ? 1.0 : node.status === "BYZANTINE" ? 0.6 : 0.3
           }
           metalness={node.status === "BLOCKED" ? 0.1 : 0.5}
           roughness={node.status === "BLOCKED" ? 0.9 : 0.3}
@@ -350,7 +349,10 @@ function ClientNode({ node, position, onHover, onUnhover, hovered }) {
   );
 }
 
-/* ─── Tooltips ─────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   TOOLTIP COMPONENTS  (Html overlay inside Canvas)
+   ─  Always dark-themed since they float over the 3D scene
+   ═══════════════════════════════════════════════════════════════ */
 function ServerTooltipContent({ fl }) {
   const method =
     fl.project?.config?.aggregationMethod?.replace(/_/g, " ") ||
@@ -361,7 +363,7 @@ function ServerTooltipContent({ fl }) {
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="font-bold text-cyan-400">⬡ CENTRAL SERVER</div>
+      <div className="font-bold text-cyan-400 text-sm">⬡ CENTRAL SERVER</div>
       <div className="h-px bg-slate-700 w-full" />
       <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
         <span className="text-slate-400">Role:</span>
@@ -391,13 +393,13 @@ function NodeTooltipContent({
   return (
     <div className="flex flex-col gap-2" style={{ pointerEvents: "auto" }}>
       <div
-        className="font-bold flex items-center gap-2"
+        className="font-bold flex items-center gap-2 text-sm"
         style={{ color: config.glowColor }}
       >
         <span>●</span>
         <span>{node.displayId}</span>
         <span
-          className="text-xs px-2 py-0.5 rounded-full"
+          className="text-[10px] px-2 py-0.5 rounded-full"
           style={{
             background: `${config.glowColor}20`,
             border: `1px solid ${config.glowColor}40`,
@@ -441,12 +443,12 @@ function NodeTooltipContent({
       </div>
 
       {node.status === "BYZANTINE" && (
-        <div className="mt-1 p-2 bg-rose-950 border border-rose-900 rounded text-xs text-rose-300">
+        <div className="mt-1 p-2 bg-rose-950 border border-rose-900 rounded text-[11px] text-rose-300">
           ⚠ FLAGGED — Update excluded from aggregation
         </div>
       )}
       {node.status === "BLOCKED" && (
-        <div className="mt-1 p-2 bg-slate-900 border border-slate-700 rounded text-xs text-slate-400">
+        <div className="mt-1 p-2 bg-slate-900 border border-slate-700 rounded text-[11px] text-slate-400">
           🚫 BLOCKED — Manually excluded by admin
         </div>
       )}
@@ -510,13 +512,13 @@ function NodeTooltip({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.85, y: 8 }}
             transition={{ duration: 0.18 }}
+            className="rounded-[10px] shadow-2xl"
             style={{
               background: "hsl(222, 47%, 9%)",
               border: "1px solid hsl(222, 30%, 18%)",
-              borderRadius: "10px",
               padding: "12px 16px",
               minWidth: "220px",
-              boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+              maxWidth: "280px",
               fontFamily: "'JetBrains Mono', monospace",
               color: "#c8d8f0",
               pointerEvents: isAdmin && !isServer ? "auto" : "none",
@@ -540,14 +542,28 @@ function NodeTooltip({
   );
 }
 
-/* ─── HUD overlays ─────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   HUD OVERLAYS  (HTML on top of Canvas — theme-aware)
+   ═══════════════════════════════════════════════════════════════ */
+
 function LiveLog({ events }) {
   return (
-    <div className="absolute top-4 right-4 w-72 max-h-72 overflow-hidden bg-[#050810]/85 border border-white/10 rounded-lg backdrop-blur-md p-3 z-10 pointer-events-none flex flex-col">
-      <div className="text-cyan-400 font-mono text-xs font-bold mb-2 tracking-wider">
+    <div
+      className={[
+        // Hidden on very small phones, visible from 480px+
+        "hidden min-[480px]:flex",
+        "absolute top-2 right-2 sm:top-4 sm:right-4",
+        "w-48 sm:w-56 md:w-72 max-h-36 sm:max-h-48 md:max-h-72",
+        "overflow-hidden rounded-lg backdrop-blur-md p-2 sm:p-3",
+        "z-10 pointer-events-none flex-col",
+        "bg-white/80 border border-slate-200",
+        "dark:bg-[#050810]/85 dark:border-white/10",
+      ].join(" ")}
+    >
+      <div className="text-cyan-600 dark:text-cyan-400 font-mono text-[10px] sm:text-xs font-bold mb-1 sm:mb-2 tracking-wider">
         LIVE LOG
       </div>
-      <div className="flex-1 overflow-y-auto flex flex-col gap-1 pr-1">
+      <div className="flex-1 overflow-y-auto flex flex-col gap-0.5 pr-1">
         <AnimatePresence initial={false}>
           {events.map((ev) => (
             <motion.div
@@ -555,7 +571,7 @@ function LiveLog({ events }) {
               initial={{ opacity: 0, y: -12, height: 0 }}
               animate={{ opacity: 1, y: 0, height: "auto" }}
               transition={{ duration: 0.2 }}
-              className="text-[10px] font-mono whitespace-nowrap overflow-hidden text-ellipsis leading-tight"
+              className="text-[8px] sm:text-[9px] md:text-[10px] font-mono whitespace-nowrap overflow-hidden text-ellipsis leading-tight"
               style={{
                 color:
                   ev.type === "join" ? "#818cf8"
@@ -578,37 +594,44 @@ function LiveLog({ events }) {
 
 function NetworkLegend() {
   return (
-    <div className="absolute bottom-4 left-4 p-3 bg-[#050810]/85 border border-white/10 rounded-lg backdrop-blur-md z-10 pointer-events-none">
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 mb-2">
-        <div className="flex items-center gap-1.5 text-xs text-slate-300 font-mono">
-          <span className="text-emerald-500">●</span> Active
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-slate-300 font-mono">
-          <span className="text-amber-500">●</span> Slow/Async
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-slate-300 font-mono">
-          <span className="text-rose-500">●</span> Flagged
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-slate-300 font-mono">
-          <span className="text-slate-500">●</span> Blocked
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-slate-300 font-mono">
-          <span className="text-indigo-400">●</span> Joining
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-slate-300 font-mono">
-          <span className="text-cyan-400">⬡</span> Server
-        </div>
+    <div
+      className={[
+        // Hidden on very small phones, visible from 480px+
+        "hidden min-[480px]:block",
+        "absolute bottom-2 left-2 sm:bottom-4 sm:left-4",
+        "p-1.5 sm:p-2 md:p-3 rounded-lg backdrop-blur-md z-10 pointer-events-none",
+        "bg-white/80 border border-slate-200",
+        "dark:bg-[#050810]/85 dark:border-white/10",
+      ].join(" ")}
+    >
+      <div className="grid grid-cols-2 gap-x-2 sm:gap-x-4 gap-y-0.5 sm:gap-y-1.5 mb-1 sm:mb-2">
+        {[
+          { color: "text-emerald-500", label: "Active" },
+          { color: "text-amber-500", label: "Slow" },
+          { color: "text-rose-500", label: "Flagged" },
+          { color: "text-slate-500 dark:text-slate-400", label: "Blocked" },
+          { color: "text-indigo-500 dark:text-indigo-400", label: "Joining" },
+          { color: "text-cyan-500 dark:text-cyan-400", label: "Server", icon: "⬡" },
+        ].map(({ color, label, icon }) => (
+          <div
+            key={label}
+            className="flex items-center gap-1 text-[9px] sm:text-[10px] md:text-xs text-slate-600 dark:text-slate-300 font-mono"
+          >
+            <span className={color}>{icon || "●"}</span> {label}
+          </div>
+        ))}
       </div>
-      <div className="text-[9px] text-slate-500 font-mono pt-1.5 border-t border-slate-700/50">
+      <div className="text-[7px] sm:text-[8px] md:text-[9px] text-slate-400 dark:text-slate-500 font-mono pt-1 border-t border-slate-200 dark:border-slate-700/50">
         Drag to orbit · Scroll to zoom
-        <br />
-        Hover for details
       </div>
     </div>
   );
 }
 
-/* ─── The 3D Scene (lives INSIDE Canvas) ───────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   3D SCENE  (lives inside <Canvas>)
+   ─  Always dark – the 3D space scene is inherently dark-themed
+   ═══════════════════════════════════════════════════════════════ */
 function NetworkScene({
   fl,
   isRunning,
@@ -619,7 +642,14 @@ function NetworkScene({
 }) {
   const [hoveredNodeId, setHoveredNodeId] = useState(null);
   const [hoveredServer, setHoveredServer] = useState(false);
+  // Track whether current selection was from a tap (persists until dismissed)
+  const [tappedNodeId, setTappedNodeId] = useState(null);
+  const [tappedServer, setTappedServer] = useState(false);
   const nodes = fl.nodes;
+
+  // Combined: a node is "active" if hovered OR tapped
+  const activeNodeId = hoveredNodeId || tappedNodeId;
+  const activeServer = hoveredServer || tappedServer;
 
   const nodePositions = useMemo(() => computeNodePositions(nodes), [nodes]);
 
@@ -648,12 +678,22 @@ function NetworkScene({
     <>
       {/* Lighting */}
       <ambientLight intensity={0.6} />
-      <pointLight position={[0, 0, 0]} intensity={2} color="#06b6d4" distance={15} decay={2} />
+      <pointLight
+        position={[0, 0, 0]}
+        intensity={2}
+        color="#06b6d4"
+        distance={15}
+        decay={2}
+      />
       <directionalLight position={[10, 10, 5]} intensity={1.2} />
-      <directionalLight position={[-8, -4, -8]} intensity={0.4} color="#818cf8" />
+      <directionalLight
+        position={[-8, -4, -8]}
+        intensity={0.4}
+        color="#818cf8"
+      />
 
-      {/* Background */}
-      <color attach="background" args={["#050810"]} />
+      {/* Background — always dark for contrast */}
+      <color attach="background" args={["#0a0f1a"]} />
 
       {/* Stars */}
       <points ref={starsRef}>
@@ -682,13 +722,27 @@ function NetworkScene({
         <meshBasicMaterial color="#06b6d4" transparent opacity={0.08} />
       </mesh>
 
+      {/* Background click to dismiss tapped tooltip */}
+      <mesh
+        position={[0, 0, -20]}
+        onClick={(e) => {
+          // Only dismiss if clicking the background mesh itself
+          e.stopPropagation();
+          setTappedNodeId(null);
+          setTappedServer(false);
+        }}
+      >
+        <planeGeometry args={[100, 100]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+
       {/* Controls */}
       <OrbitControls
         enableDamping
         dampingFactor={0.05}
         minDistance={4}
         maxDistance={14}
-        autoRotate={autoRotate && !hoveredNodeId && !hoveredServer}
+        autoRotate={autoRotate && !activeNodeId && !activeServer}
         autoRotateSpeed={0.4}
       />
 
@@ -714,9 +768,14 @@ function NetworkScene({
         position={[0, 0, 0]}
         onHover={() => setHoveredServer(true)}
         onUnhover={() => setHoveredServer(false)}
-        hovered={hoveredServer}
+        hovered={activeServer}
+        onClick={(e) => {
+          e.stopPropagation();
+          setTappedServer((prev) => !prev);
+          setTappedNodeId(null);
+        }}
       />
-      {hoveredServer && (
+      {activeServer && (
         <NodeTooltip
           position={[0, SERVER_SIZE + 0.5, 0]}
           visible
@@ -729,7 +788,7 @@ function NetworkScene({
       {nodes.map((node) => {
         const posData = nodePositions.get(node.nodeId);
         if (!posData) return null;
-        const isHovered = hoveredNodeId === node.nodeId;
+        const isActive = activeNodeId === node.nodeId;
         return (
           <React.Fragment key={`node-${node.nodeId}`}>
             <ClientNode
@@ -737,9 +796,16 @@ function NetworkScene({
               position={posData.position}
               onHover={() => setHoveredNodeId(node.nodeId)}
               onUnhover={() => setHoveredNodeId(null)}
-              hovered={isHovered}
+              hovered={isActive}
+              onClick={(e) => {
+                e.stopPropagation();
+                setTappedNodeId((prev) =>
+                  prev === node.nodeId ? null : node.nodeId,
+                );
+                setTappedServer(false);
+              }}
             />
-            {isHovered && (
+            {isActive && (
               <NodeTooltip
                 node={node}
                 position={posData.position}
@@ -748,7 +814,10 @@ function NetworkScene({
                 isAdmin={isAdmin}
                 onBlock={onBlockNode}
                 onUnblock={onUnblockNode}
-                setHoveredNodeId={setHoveredNodeId}
+                setHoveredNodeId={(id) => {
+                  setHoveredNodeId(id);
+                  if (id === null) setTappedNodeId(null);
+                }}
               />
             )}
           </React.Fragment>
@@ -758,7 +827,9 @@ function NetworkScene({
   );
 }
 
-/* ─── Main Component ───────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   MAIN COMPONENT  (theme-aware wrapper)
+   ═══════════════════════════════════════════════════════════════ */
 function NetworkTopology({ projectId }) {
   const fl = useFL(projectId);
   const currentUser = useStore((s) => s.user);
@@ -819,67 +890,109 @@ function NetworkTopology({ projectId }) {
     }
   }, [fl.currentRound, fl.latestRound, pushLog]);
 
-  /* ── Loading state ── */
+  /* ── Loading ── */
   if (!fl.nodes || fl.nodes.length === 0) {
     return (
-      <div className="h-[320px] md:h-[520px] w-full flex items-center justify-center bg-[#050810] rounded-xl border border-border">
-        <div className="flex flex-col items-center gap-3 text-slate-400 font-mono text-sm">
-          <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
-          Initializing network...
+      <div className="h-[350px] sm:h-[400px] md:h-[460px] lg:h-[520px] w-full flex items-center justify-center bg-slate-50 dark:bg-[#050810] rounded-xl border border-border">
+        <div className="flex flex-col items-center gap-3 text-slate-500 dark:text-slate-400 font-mono text-xs sm:text-sm">
+          <div className="w-5 h-5 sm:w-6 sm:h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
+          Initializing network…
         </div>
       </div>
     );
   }
 
+  /* ── Derived metrics ── */
+  const activeCount = fl.nodes.filter(
+    (n) => n.status === "ACTIVE" || n.status === "SLOW",
+  ).length;
+  const flaggedCount = fl.nodes.filter(
+    (n) => n.status === "BYZANTINE",
+  ).length;
+  const avgTrust = (
+    (fl.nodes.reduce((acc, n) => acc + (n.trust || 0), 0) /
+      Math.max(fl.nodes.length, 1)) *
+    100
+  ).toFixed(1);
+
   return (
-    <div className="relative w-full h-[320px] md:h-[520px] flex flex-col bg-[#050810] rounded-xl border border-border overflow-hidden">
-      {/* Status bar */}
-      <div className="flex-none flex items-center justify-between px-4 py-2 bg-slate-900/80 backdrop-blur z-10 border-b border-white/5">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1.5 metric-label">
-            <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span className="text-slate-300">Active</span>
-            <span className="mono-data ml-1 text-emerald-400">
-              {
-                fl.nodes.filter(
-                  (n) => n.status === "ACTIVE" || n.status === "SLOW",
-                ).length
-              }
+    <div
+      className={[
+        "relative w-full flex flex-col overflow-hidden rounded-xl border",
+        // Responsive heights — tall enough for the 3D scene to be clearly visible
+        "h-[350px] sm:h-[400px] md:h-[460px] lg:h-[520px]",
+        // Light mode
+        "bg-slate-50 border-slate-200",
+        // Dark mode
+        "dark:bg-[#050810] dark:border-white/10",
+      ].join(" ")}
+    >
+      {/* ─── Status Bar — compact single row on mobile ──── */}
+      <div
+        className={[
+          "flex-none flex items-center justify-between",
+          "px-2 sm:px-4 py-1 sm:py-2 z-10 border-b",
+          "bg-white/90 backdrop-blur border-slate-200",
+          "dark:bg-slate-900/80 dark:backdrop-blur dark:border-white/5",
+        ].join(" ")}
+      >
+        {/* Left: compact metrics — always single row */}
+        <div className="flex items-center gap-2 sm:gap-3 md:gap-4 overflow-x-auto">
+          {/* Active */}
+          <div className="flex items-center gap-1 shrink-0">
+            <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-500" />
+            <span className="text-[8px] sm:text-[10px] font-mono uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 hidden min-[400px]:inline">
+              Active
+            </span>
+            <span className="font-mono text-[9px] sm:text-xs font-bold text-emerald-600 dark:text-emerald-400">
+              {activeCount}
             </span>
           </div>
-          <div className="flex items-center gap-1.5 metric-label">
-            <span className="w-2 h-2 rounded-full bg-rose-500" />
-            <span className="text-slate-300">Flagged</span>
-            <span className="mono-data ml-1 text-rose-400">
-              {fl.nodes.filter((n) => n.status === "BYZANTINE").length}
+          {/* Flagged */}
+          <div className="flex items-center gap-1 shrink-0">
+            <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-rose-500" />
+            <span className="text-[8px] sm:text-[10px] font-mono uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400 hidden min-[400px]:inline">
+              Flagged
+            </span>
+            <span className="font-mono text-[9px] sm:text-xs font-bold text-rose-600 dark:text-rose-400">
+              {flaggedCount}
             </span>
           </div>
-          <div className="flex items-center gap-1.5 metric-label">
-            <span className="text-slate-300">Avg Trust</span>
-            <span className="mono-data ml-1 text-cyan-400">
-              {(
-                (fl.nodes.reduce((acc, n) => acc + (n.trust || 0), 0) /
-                  Math.max(fl.nodes.length, 1)) *
-                100
-              ).toFixed(1)}
-              %
+          {/* Avg Trust — only on 640px+ */}
+          <div className="hidden sm:flex items-center gap-1 shrink-0">
+            <span className="text-[10px] font-mono uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+              Trust
+            </span>
+            <span className="font-mono text-xs font-bold text-cyan-600 dark:text-cyan-400">
+              {avgTrust}%
             </span>
           </div>
-          <div className="flex items-center gap-1.5 metric-label">
-            <span className="text-slate-300">Round</span>
-            <span className="mono-data ml-1 text-slate-200">
+          {/* Round */}
+          <div className="flex items-center gap-1 shrink-0">
+            <span className="text-[8px] sm:text-[10px] font-mono uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+              R
+            </span>
+            <span className="font-mono text-[9px] sm:text-xs font-bold text-slate-700 dark:text-slate-200">
               {fl.currentRound}
             </span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+
+        {/* Right: orbit toggle */}
+        <div className="flex items-center gap-1.5 shrink-0 ml-2">
           {isAdmin && (
-            <div className="text-[10px] text-slate-400 font-mono hidden sm:block mr-2 px-2 py-1 bg-white/5 rounded">
-              Hover node → Block in tooltip
+            <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono hidden lg:block px-2 py-1 bg-slate-100 dark:bg-white/5 rounded">
+              Hover node → Block
             </div>
           )}
           <button
-            className={`px-3 py-1 bg-white/5 hover:bg-white/10 rounded text-xs font-mono transition-colors ${autoRotate ? "text-cyan-400" : "text-slate-400"}`}
+            className={[
+              "px-1.5 sm:px-3 py-0.5 sm:py-1 rounded text-[9px] sm:text-xs font-mono transition-colors whitespace-nowrap",
+              "bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10",
+              autoRotate
+                ? "text-cyan-600 dark:text-cyan-400"
+                : "text-slate-500 dark:text-slate-400",
+            ].join(" ")}
             onClick={() => setAutoRotate(!autoRotate)}
           >
             {autoRotate ? "Orbit: ON" : "Orbit: OFF"}
@@ -887,8 +1000,8 @@ function NetworkTopology({ projectId }) {
         </div>
       </div>
 
-      {/* 3D Canvas */}
-      <div className="flex-1 relative">
+      {/* ─── 3D Canvas — guaranteed min height ─────────── */}
+      <div className="flex-1 relative" style={{ minHeight: "200px" }}>
         <Canvas
           camera={{ position: [0, 5, 12], fov: 50 }}
           frameloop="always"
