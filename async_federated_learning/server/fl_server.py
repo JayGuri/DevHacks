@@ -488,7 +488,8 @@ async def handle_websocket(
                         client_id, len(message), MAX_MESSAGE_SIZE,
                     )
                     continue
-                data = json.loads(message)
+                # Offload JSON deserialization to a thread to prevent event loop blocking with large/nested payloads
+                data = await asyncio.to_thread(json.loads, message)
                 msg_type = data.get("type", "")
 
                 if msg_type == "weight_update":

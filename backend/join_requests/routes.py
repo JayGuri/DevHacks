@@ -1,196 +1,156 @@
-# backend/join_requests/routes.py — Join Request management API
+# backend/join_requests/routes.py — JoinRequests REST API
 """
-GET    /api/join-requests  (filter by projectId, userId, status)
-POST   /api/join-requests
-PATCH  /api/join-requests/:id/approve
-PATCH  /api/join-requests/:id/reject
+Join request operations using Beanie ODM.
 """
 
+from fastapi import APIRouter, HTTPException, Depends
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from typing import Optional
-
-from auth.dependencies import get_current_user
-from db.database import get_db
+from auth.dependencies import get_current_user, require_team_lead
 from db.models import User, Project, ProjectMember, JoinRequest, Notification
+from join_requests.schemas import JoinRequestCreate
 
 router = APIRouter()
 
 
-# --------------------------------------------------------------------------
-# Schemas
-# --------------------------------------------------------------------------
-
-class JoinRequestCreate(BaseModel):
-    projectId: str
-    message: str = ""
-
-
-def _format_request(jr: JoinRequest, db: Session) -> dict:
-    user = db.query(User).filter(User.id == jr.user_id).first()
-    project = db.query(Project).filter(Project.id == jr.project_id).first()
-    return {
-        "id": jr.id,
-        "userId": jr.user_id,
-        "userName": user.name if user else "Unknown",
-        "userEmail": user.email if user else "",
-        "projectId": jr.project_id,
-        "projectName": project.name if project else "Unknown",
-        "message": jr.message,
-        "status": jr.status,
-        "requestedAt": jr.requested_at.isoformat() if jr.requested_at else "",
-        "resolvedAt": jr.resolved_at.isoformat() if jr.resolved_at else None,
-        "resolvedBy": jr.resolved_by,
-    }
-
-
-# --------------------------------------------------------------------------
-# Routes
-# --------------------------------------------------------------------------
-
 @router.get("/join-requests")
-def list_join_requests(
-    projectId: Optional[str] = Query(default=None),
-    userId: Optional[str] = Query(default=None),
-    status: Optional[str] = Query(default=None),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """List join requests with optional filters."""
-    query = db.query(JoinRequest)
-    if projectId:
-        query = query.filter(JoinRequest.project_id == projectId)
-    if userId:
-        query = query.filter(JoinRequest.user_id == userId)
-    if status:
-        query = query.filter(JoinRequest.status == status)
-
-    requests = query.order_by(JoinRequest.requested_at.desc()).all()
-    return [_format_request(jr, db) for jr in requests]
+async def list_join_requests(current_user: User = Depends(require_team_lead)):
+    """List all pending join requests (admin only)."""
+    requests = await JoinRequest.find(JoinRequest.status == "pending").to_list()
+    
+    result = []
+    for req in requests:
+        user = await User.find_one(User.id == req.user_id)
+        project = await Project.find_one(Project.id == req.project_id)
+        
+        result.append({
+            "id": req.id,
+            "userId": req.user_id,
+            "userName": user.name if user else "Unknown",
+            "projectId": req.project_id,
+            "projectName": project.name if project else "Unknown",
+            "message": req.message,
+            "status": req.status,
+            "requestedAt": req.requested_at.isoformat() if req.requested_at else "",
+        })
+    
+    return result
 
 
 @router.post("/join-requests")
-def create_join_request(
+async def create_join_request(
     body: JoinRequestCreate,
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Submit a new join request."""
-    project = db.query(Project).filter(Project.id == body.projectId).first()
+    """Create new join request."""
+    # Check if project exists
+    project = await Project.find_one(Project.id == body.projectId)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Check for existing pending request
-    existing = db.query(JoinRequest).filter(
+    # Check if already member
+    existing_member = await ProjectMember.find_one(
+        ProjectMember.user_id == current_user.id,
+        ProjectMember.project_id == body.projectId,
+    )
+    if existing_member:
+        raise HTTPException(status_code=409, detail="Already a member")
+
+    # Check if already requested
+    existing_request = await JoinRequest.find_one(
         JoinRequest.user_id == current_user.id,
         JoinRequest.project_id == body.projectId,
         JoinRequest.status == "pending",
-    ).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="A pending request already exists")
+    )
+    if existing_request:
+        raise HTTPException(status_code=409, detail="Join request already pending")
 
-    jr = JoinRequest(
+    # Create request
+    request = JoinRequest(
         user_id=current_user.id,
         project_id=body.projectId,
-        message=body.message,
+        message=body.message or "",
     )
-    db.add(jr)
+    await request.insert()
 
-    # Notify project creator
-    notif = Notification(
-        user_id=project.created_by,
-        type="info",
-        message=f"{current_user.name} requested to join {project.name}",
-        project_id=project.id,
-    )
-    db.add(notif)
-    db.commit()
-    db.refresh(jr)
-
-    return _format_request(jr, db)
+    return {"message": "Join request submitted", "requestId": request.id}
 
 
 @router.patch("/join-requests/{request_id}/approve")
-def approve_request(
+async def approve_join_request(
     request_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_team_lead),
 ):
-    """Approve a join request — adds user as project member."""
-    jr = db.query(JoinRequest).filter(JoinRequest.id == request_id).first()
-    if not jr:
+    """Approve join request."""
+    request = await JoinRequest.find_one(JoinRequest.id == request_id)
+    if not request:
         raise HTTPException(status_code=404, detail="Request not found")
-    if jr.status != "pending":
+
+    if request.status != "pending":
         raise HTTPException(status_code=400, detail="Request already resolved")
 
-    project = db.query(Project).filter(Project.id == jr.project_id).first()
-
-    # Check capacity
-    member_count = db.query(ProjectMember).filter(
-        ProjectMember.project_id == jr.project_id
-    ).count()
-    if project and member_count >= project.max_members:
-        raise HTTPException(status_code=409, detail="Project is full")
-
-    jr.status = "approved"
-    jr.resolved_at = datetime.now(timezone.utc)
-    jr.resolved_by = current_user.id
-
-    # Add as member
-    row = chr(65 + (member_count // 4))
-    col = (member_count % 4) + 1
+    # Add member
+    members_count = await ProjectMember.find(ProjectMember.project_id == request.project_id).count()
+    node_id = _assign_node_id(members_count)
+    
     member = ProjectMember(
-        user_id=jr.user_id,
-        project_id=jr.project_id,
-        node_id=f"NODE_{row}{col}",
+        user_id=request.user_id,
+        project_id=request.project_id,
+        node_id=node_id,
         role="contributor",
     )
-    db.add(member)
+    await member.insert()
 
-    # Notify the requester
-    notif = Notification(
-        user_id=jr.user_id,
+    # Update request
+    request.status = "approved"
+    request.resolved_at = datetime.now(timezone.utc)
+    request.resolved_by = current_user.id
+    await request.save()
+
+    # Create notification
+    notification = Notification(
+        user_id=request.user_id,
         type="info",
-        message=f"Your request to join {project.name} was approved!",
-        project_id=jr.project_id,
+        message=f"Your join request was approved. Node ID: {node_id}",
+        project_id=request.project_id,
     )
-    db.add(notif)
-    db.commit()
-    db.refresh(jr)
+    await notification.insert()
 
-    return _format_request(jr, db)
+    return {"message": "Request approved", "nodeId": node_id}
 
 
 @router.patch("/join-requests/{request_id}/reject")
-def reject_request(
+async def reject_join_request(
     request_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_team_lead),
 ):
-    """Reject a join request."""
-    jr = db.query(JoinRequest).filter(JoinRequest.id == request_id).first()
-    if not jr:
+    """Reject join request."""
+    request = await JoinRequest.find_one(JoinRequest.id == request_id)
+    if not request:
         raise HTTPException(status_code=404, detail="Request not found")
-    if jr.status != "pending":
+
+    if request.status != "pending":
         raise HTTPException(status_code=400, detail="Request already resolved")
 
-    project = db.query(Project).filter(Project.id == jr.project_id).first()
+    request.status = "rejected"
+    request.resolved_at = datetime.now(timezone.utc)
+    request.resolved_by = current_user.id
+    await request.save()
 
-    jr.status = "rejected"
-    jr.resolved_at = datetime.now(timezone.utc)
-    jr.resolved_by = current_user.id
-
-    notif = Notification(
-        user_id=jr.user_id,
-        type="alert",
-        message=f"Your request to join {project.name if project else 'a project'} was rejected.",
-        project_id=jr.project_id,
+    # Create notification
+    notification = Notification(
+        user_id=request.user_id,
+        type="info",
+        message="Your join request was rejected.",
+        project_id=request.project_id,
     )
-    db.add(notif)
-    db.commit()
-    db.refresh(jr)
+    await notification.insert()
 
-    return _format_request(jr, db)
+    return {"message": "Request rejected"}
+
+
+def _assign_node_id(index: int) -> str:
+    """Generate display node ID."""
+    row = chr(65 + (index // 4))
+    col = (index % 4) + 1
+    return f"NODE_{row}{col}"

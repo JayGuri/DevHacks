@@ -1,21 +1,36 @@
-# backend/app.py — FastAPI application entry point
+# backend/app_mongo.py — MongoDB-based FastAPI application
 """
-ARFL Platform Web Backend
-=========================
-Serves REST APIs + WebSocket for the React frontend.
-Bridges the existing FL engine for real-time federated learning simulation.
+ARFL Platform Web Backend with MongoDB Atlas
+============================================
+MongoDB-powered version using Motor + Beanie for async operations.
 
 Run with:
-    cd backend && python app.py
+    cd backend && python app_mongo.py
 
 Or:
-    cd backend && uvicorn app:app --reload --port 8000
+    cd backend && uvicorn app_mongo:app --reload --port 8000
 """
+
+import warnings
+
+warnings.warn(
+    "\n\n"
+    "======================================================================\n"
+    "DEPRECATION WARNING: The 'backend' directory is deprecated due to     \n"
+    "architectural redundancy. The active asynchronous production          \n"
+    "backend is located at 'async_federated_learning/main.py'.             \n"
+    "Please migrate all systems to the async federated learning server.    \n"
+    "This entry point will be removed in future releases.                  \n"
+    "======================================================================\n",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 import os
 import sys
 import logging
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 
@@ -33,8 +48,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("arfl.app")
 
-# Import DB init
-from db.database import init_db
+# Import MongoDB connection
+from db.database import connect_to_mongo, close_mongo_connection, health_check
 
 # Import route modules
 from auth.routes import router as auth_router
@@ -45,16 +60,42 @@ from training.routes import router as training_router
 
 
 # --------------------------------------------------------------------------
+# Lifespan context manager (startup/shutdown)
+# --------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize MongoDB on startup, close on shutdown."""
+    logger.info("ARFL Backend (MongoDB) starting up...")
+    
+    # Connect to MongoDB Atlas
+    try:
+        await connect_to_mongo()
+        logger.info("MongoDB Atlas connected successfully")
+    except Exception as e:
+        logger.error(f"Failed to connect to MongoDB: {e}")
+        raise
+    
+    yield
+    
+    # Cleanup on shutdown
+    await close_mongo_connection()
+    logger.info("ARFL Backend shutting down...")
+
+
+# --------------------------------------------------------------------------
 # App factory
 # --------------------------------------------------------------------------
 
 app = FastAPI(
-    title="ARFL Platform — Web Backend",
+    title="ARFL Platform — Web Backend (MongoDB)",
     description=(
         "REST API + WebSocket backend for the Asynchronous Robust Federated Learning platform. "
+        "Uses MongoDB Atlas for data persistence. "
         "Bridges the FL engine (aggregation, SABD, DP, Byzantine attacks) with the React frontend."
     ),
-    version="1.0.0",
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 # CORS — allow all origins for development
@@ -81,31 +122,32 @@ app.include_router(training_router, prefix="/api", tags=["Training"])
 
 
 # --------------------------------------------------------------------------
-# Startup event
-# --------------------------------------------------------------------------
-
-@app.on_event("startup")
-def on_startup():
-    """Initialize database tables on startup."""
-    logger.info("ARFL Backend starting up...")
-    init_db()
-    logger.info("Database initialized (SQLite)")
-    logger.info("ARFL Backend ready — http://localhost:%s", os.getenv("PORT", "8000"))
-    logger.info("API docs available at http://localhost:%s/docs", os.getenv("PORT", "8000"))
-
-
-# --------------------------------------------------------------------------
-# Health check
+# Health check endpoints
 # --------------------------------------------------------------------------
 
 @app.get("/health", tags=["System"])
-def health_check():
-    """Health check endpoint."""
+async def health_check_endpoint():
+    """Health check with MongoDB status."""
     from training.coordinator import _coordinators
+    
+    mongo_status = await health_check()
+    
     return {
         "status": "ok",
-        "service": "arfl-backend",
+        "service": "arfl-backend-mongodb",
+        "database": mongo_status,
         "activeTrainingSessions": len(_coordinators),
+    }
+
+
+@app.get("/", tags=["System"])
+def root():
+    """Root endpoint."""
+    return {
+        "service": "ARFL Platform Backend",
+        "version": "2.0.0",
+        "database": "MongoDB Atlas",
+        "docs": "/docs",
     }
 
 
@@ -118,7 +160,7 @@ if __name__ == "__main__":
 
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run(
-        "app:app",
+        "app_mongo:app",
         host="0.0.0.0",
         port=port,
         reload=True,

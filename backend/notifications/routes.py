@@ -1,75 +1,60 @@
-# backend/notifications/routes.py — Notification management API
+# backend/notifications/routes.py — Notifications REST API
 """
-GET    /api/notifications           → Notification[]
-PATCH  /api/notifications/:id/read  → void
-PATCH  /api/notifications/read-all  → void
+Notification operations using Beanie ODM.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, Depends
 
 from auth.dependencies import get_current_user
-from db.database import get_db
 from db.models import User, Notification
 
 router = APIRouter()
 
 
-def _format_notification(n: Notification) -> dict:
-    return {
-        "id": n.id,
-        "type": n.type,
-        "message": n.message,
-        "projectId": n.project_id,
-        "read": n.read,
-        "createdAt": n.created_at.isoformat() if n.created_at else "",
-    }
-
-
 @router.get("/notifications")
-def list_notifications(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Get all notifications for the current user (max 50, newest first)."""
-    notifs = (
-        db.query(Notification)
-        .filter(Notification.user_id == current_user.id)
-        .order_by(Notification.created_at.desc())
-        .limit(50)
-        .all()
-    )
-    return [_format_notification(n) for n in notifs]
+async def list_notifications(current_user: User = Depends(get_current_user)):
+    """List all notifications for current user."""
+    notifications = await Notification.find(
+        Notification.user_id == current_user.id
+    ).sort(-Notification.created_at).to_list()
+    
+    return [
+        {
+            "id": n.id,
+            "type": n.type,
+            "message": n.message,
+            "projectId": n.project_id,
+            "read": n.read,
+            "createdAt": n.created_at.isoformat() if n.created_at else "",
+        }
+        for n in notifications
+    ]
 
 
 @router.patch("/notifications/{notification_id}/read")
-def mark_read(
+async def mark_notification_read(
     notification_id: str,
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Mark a single notification as read."""
-    notif = db.query(Notification).filter(
-        Notification.id == notification_id,
-        Notification.user_id == current_user.id,
-    ).first()
-    if not notif:
+    """Mark notification as read."""
+    notification = await Notification.find_one(Notification.id == notification_id)
+    if not notification:
         raise HTTPException(status_code=404, detail="Notification not found")
 
-    notif.read = True
-    db.commit()
-    return {"message": "Marked as read"}
+    if notification.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your notification")
+
+    notification.read = True
+    await notification.save()
+    return {"message": "Notification marked as read"}
 
 
-@router.patch("/notifications/read-all")
-def mark_all_read(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Mark all notifications as read for the current user."""
-    db.query(Notification).filter(
+@router.get("/notifications/unread-count")
+async def get_unread_count(current_user: User = Depends(get_current_user)):
+    """Get count of unread notifications."""
+    count = await Notification.find(
         Notification.user_id == current_user.id,
         Notification.read == False,
-    ).update({"read": True})
-    db.commit()
-    return {"message": "All notifications marked as read"}
+    ).count()
+    
+    return {"count": count}

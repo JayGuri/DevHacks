@@ -60,9 +60,11 @@ class DifferentialPrivacyMechanism:
 
     def add_noise(self, weight_delta: dict) -> dict:
         """Add calibrated Gaussian noise: sigma = noise_multiplier * clip_norm."""
+        import secrets
         noise_std = self.noise_multiplier * self.clip_norm
+        rng = np.random.default_rng(secrets.randbits(128))
         noised = {
-            k: v + np.random.normal(0.0, noise_std, v.shape)
+            k: v + rng.normal(0.0, noise_std, v.shape)
             for k, v in weight_delta.items()
         }
         logger.debug(

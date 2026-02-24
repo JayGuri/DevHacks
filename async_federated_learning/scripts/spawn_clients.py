@@ -124,16 +124,21 @@ async def main():
             print(f"Failed to register {config['name']}: {e}")
             continue
 
+        import re
+        def sanitize_env(val: str) -> str:
+            # Remove any characters that could be used for shell manipulation or injection
+            return re.sub(r'[^\w\-\.]', '_', str(val))
+
         env = os.environ.copy()
-        env["CLIENT_ID"] = node_id
-        env["CLIENT_ROLE"] = config["role"]
-        env["DISPLAY_NAME"] = config["name"]
+        env["CLIENT_ID"] = sanitize_env(node_id)
+        env["CLIENT_ROLE"] = sanitize_env(config["role"])
+        env["DISPLAY_NAME"] = sanitize_env(config["name"])
         env["PARTICIPANT"] = "SpawnScript"
-        env["SERVER_URL"] = args.url
-        env["AUTH_TOKEN"] = token
-        env["DATASET"] = args.task
-        env["NODE_INDEX"] = str(config["partition"])
-        env["TOTAL_NODES"] = str(total_clients)
+        env["SERVER_URL"] = str(args.url)  # URL is parsed and structurally validated above
+        env["AUTH_TOKEN"] = str(token)
+        env["DATASET"] = sanitize_env(args.task)
+        env["NODE_INDEX"] = sanitize_env(config["partition"])
+        env["TOTAL_NODES"] = sanitize_env(total_clients)
         env["LOCAL_EPOCHS"] = "2" # faster training for demo
         env["STALENESS_DELAY"] = str(config["stale"])
         

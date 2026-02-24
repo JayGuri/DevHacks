@@ -1,21 +1,24 @@
-# backend/db/models.py — ORM models for Users, Projects, JoinRequests, Notifications, ActivityLogs
+# backend/db/models.py — Beanie ODM models for MongoDB
 """
-All ORM models map 1:1 to the frontend spec entities.
-ProjectConfig is stored as a JSON column inside the Project table.
+MongoDB Document Models using Beanie ODM
+========================================
+Maps to the same schema as SQLAlchemy models for API compatibility.
+
+Beanie provides:
+  - Async CRUD operations
+  - Pydantic validation
+  - MongoDB indexing
+  - Relationship simulation via references
 """
 
 import uuid
 import string
 import random
 from datetime import datetime, timezone
+from typing import Optional, List
 
-from sqlalchemy import (
-    Column, String, Boolean, Integer, Float, Text, DateTime, ForeignKey, JSON,
-    Enum as SAEnum,
-)
-from sqlalchemy.orm import relationship
-
-from db.database import Base
+from beanie import Document, Indexed
+from pydantic import Field, EmailStr
 
 
 def _uuid() -> str:
@@ -31,44 +34,54 @@ def _invite_code() -> str:
 
 
 # --------------------------------------------------------------------------
-# User
+# User Document
 # --------------------------------------------------------------------------
 
-class User(Base):
-    __tablename__ = "users"
+class User(Document):
+    """User account document."""
 
-    id = Column(String, primary_key=True, default=_uuid)
-    name = Column(String(120), nullable=False)
-    email = Column(String(255), unique=True, nullable=False, index=True)
-    hashed_password = Column(String(255), nullable=False)
-    role = Column(String(20), nullable=False, default="CONTRIBUTOR")  # TEAM_LEAD | CONTRIBUTOR
-    subscription_tier = Column(String(10), nullable=False, default="FREE")  # FREE | PRO
-    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    id: str = Field(default_factory=_uuid, alias="_id")
+    name: str = Field(max_length=120)
+    email: Indexed(EmailStr, unique=True)  # Unique index on email
+    hashed_password: str
+    role: str = Field(default="CONTRIBUTOR")  # TEAM_LEAD | CONTRIBUTOR
+    created_at: datetime = Field(default_factory=_utcnow)
 
-    # Relationships
-    projects_created = relationship("Project", back_populates="creator", lazy="dynamic")
-    memberships = relationship("ProjectMember", back_populates="user", lazy="dynamic")
+    class Settings:
+        name = "users"
+        indexes = [
+            "email",  # Unique index for fast lookups
+        ]
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "Alice Smith",
+                "email": "alice@example.com",
+                "role": "TEAM_LEAD",
+            }
+        }
 
 
 # --------------------------------------------------------------------------
-# Project
+# Project Document
 # --------------------------------------------------------------------------
 
-class Project(Base):
-    __tablename__ = "projects"
+class Project(Document):
+    """Federated learning project document."""
 
-    id = Column(String, primary_key=True, default=_uuid)
-    name = Column(String(200), nullable=False)
-    description = Column(Text, default="")
-    created_by = Column(String, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=_utcnow)
-    is_active = Column(Boolean, default=True)
-    visibility = Column(String(10), default="public")  # public | private
-    invite_code = Column(String(6), nullable=True, default=None)
-    max_members = Column(Integer, default=10)
+    id: str = Field(default_factory=_uuid, alias="_id")
+    name: str = Field(max_length=200)
+    description: str = ""
+    created_by: str  # User ID (foreign key simulation)
+    created_at: datetime = Field(default_factory=_utcnow)
+    is_active: bool = True
+    visibility: str = "public"  # public | private
+    invite_code: Optional[str] = None
+    max_members: int = 10
 
-    # FL training configuration — stored as JSON
-    config = Column(JSON, default=lambda: {
+    # FL training configuration
+    config: dict = Field(default_factory=lambda: {
         "numClients": 10,
         "byzantineFraction": 0.2,
         "attackType": "sign_flipping",
@@ -82,79 +95,96 @@ class Project(Base):
         "localEpochs": 3,
     })
 
-    # Relationships
-    creator = relationship("User", back_populates="projects_created")
-    members = relationship("ProjectMember", back_populates="project", cascade="all, delete-orphan")
-    join_requests = relationship("JoinRequest", back_populates="project", cascade="all, delete-orphan")
+    class Settings:
+        name = "projects"
+        indexes = [
+            "created_by",
+            "invite_code",
+        ]
 
 
 # --------------------------------------------------------------------------
-# ProjectMember
+# ProjectMember Document
 # --------------------------------------------------------------------------
 
-class ProjectMember(Base):
-    __tablename__ = "project_members"
+class ProjectMember(Document):
+    """Project membership document."""
 
-    id = Column(String, primary_key=True, default=_uuid)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    project_id = Column(String, ForeignKey("projects.id"), nullable=False)
-    node_id = Column(String(20), nullable=True)  # e.g. "NODE_B2"
-    role = Column(String(20), default="contributor")  # lead | contributor
-    joined_at = Column(DateTime(timezone=True), default=_utcnow)
+    id: str = Field(default_factory=_uuid, alias="_id")
+    user_id: str  # User ID
+    project_id: str  # Project ID
+    node_id: Optional[str] = None  # e.g. "NODE_B2"
+    role: str = "contributor"  # lead | contributor
+    joined_at: datetime = Field(default_factory=_utcnow)
 
-    # Relationships
-    user = relationship("User", back_populates="memberships")
-    project = relationship("Project", back_populates="members")
-
-
-# --------------------------------------------------------------------------
-# JoinRequest
-# --------------------------------------------------------------------------
-
-class JoinRequest(Base):
-    __tablename__ = "join_requests"
-
-    id = Column(String, primary_key=True, default=lambda: f"req-{int(_utcnow().timestamp() * 1000)}")
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    project_id = Column(String, ForeignKey("projects.id"), nullable=False)
-    message = Column(Text, default="")
-    status = Column(String(10), default="pending")  # pending | approved | rejected
-    requested_at = Column(DateTime(timezone=True), default=_utcnow)
-    resolved_at = Column(DateTime(timezone=True), nullable=True)
-    resolved_by = Column(String, ForeignKey("users.id"), nullable=True)
-
-    # Relationships
-    user = relationship("User", foreign_keys=[user_id])
-    project = relationship("Project", back_populates="join_requests")
-    resolver = relationship("User", foreign_keys=[resolved_by])
+    class Settings:
+        name = "project_members"
+        indexes = [
+            [("user_id", 1), ("project_id", 1)],  # Compound index
+        ]
 
 
 # --------------------------------------------------------------------------
-# Notification
+# JoinRequest Document
 # --------------------------------------------------------------------------
 
-class Notification(Base):
-    __tablename__ = "notifications"
+class JoinRequest(Document):
+    """Project join request document."""
 
-    id = Column(String, primary_key=True, default=lambda: f"notif-{int(_utcnow().timestamp() * 1000)}")
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    type = Column(String(20), default="info")  # alert | node_blocked | config | info
-    message = Column(Text, nullable=False)
-    project_id = Column(String, nullable=True)
-    read = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    id: str = Field(default_factory=lambda: f"req-{int(_utcnow().timestamp() * 1000)}", alias="_id")
+    user_id: str  # User ID
+    project_id: str  # Project ID
+    message: str = ""
+    status: str = "pending"  # pending | approved | rejected
+    requested_at: datetime = Field(default_factory=_utcnow)
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None  # User ID
+
+    class Settings:
+        name = "join_requests"
+        indexes = [
+            [("project_id", 1), ("status", 1)],
+        ]
 
 
 # --------------------------------------------------------------------------
-# ActivityLog
+# Notification Document
 # --------------------------------------------------------------------------
 
-class ActivityLog(Base):
-    __tablename__ = "activity_logs"
+class Notification(Document):
+    """User notification document."""
 
-    id = Column(String, primary_key=True, default=_uuid)
-    type = Column(String(30), nullable=False)  # block | unblock | config_change | round_complete
-    node_id = Column(String, nullable=True)
-    display_id = Column(String, nullable=True)
-    project_id = Column(String, ForeignKey("projects.id"), nullable=False)
-    timestamp = Column(DateTime(timezone=True), default=_utcnow)
+    id: str = Field(default_factory=lambda: f"notif-{int(_utcnow().timestamp() * 1000)}", alias="_id")
+    user_id: str  # User ID
+    type: str = "info"  # alert | node_blocked | config | info
+    message: str
+    project_id: Optional[str] = None
+    read: bool = False
+    created_at: datetime = Field(default_factory=_utcnow)
+
+    class Settings:
+        name = "notifications"
+        indexes = [
+            [("user_id", 1), ("read", 1)],
+        ]
+
+
+# --------------------------------------------------------------------------
+# ActivityLog Document
+# --------------------------------------------------------------------------
+
+class ActivityLog(Document):
+    """System activity log document."""
+
+    id: str = Field(default_factory=_uuid, alias="_id")
+    type: str  # block | unblock | config_change | round_complete
+    node_id: Optional[str] = None
+    display_id: Optional[str] = None
+    project_id: str  # Project ID
+    timestamp: datetime = Field(default_factory=_utcnow)
+
+    class Settings:
+        name = "activity_logs"
+        indexes = [
+            [("project_id", 1), ("timestamp", -1)],  # Sorted by timestamp
+        ]

@@ -1,179 +1,44 @@
 {
   "max_nodes_per_task": 100,
   "task_counts": {
-    "femnist": 19
+    "femnist": 4
   },
   "nodes": {
-    "node-fem-000-c43c16": {
-      "node_id": "node-fem-000-c43c16",
+    "node-fem-000-b59e32": {
+      "node_id": "node-fem-000-b59e32",
       "display_name": "LegitClient-1",
       "role": "legitimate_client",
       "task": "femnist",
       "node_index": 0,
       "total_nodes": 100,
-      "created_at": "2026-02-22T04:49:43.607122+00:00"
+      "created_at": "2026-02-24T18:04:38.010168+00:00"
     },
-    "node-fem-001-c32ca6": {
-      "node_id": "node-fem-001-c32ca6",
+    "node-fem-001-40e01f": {
+      "node_id": "node-fem-001-40e01f",
       "display_name": "LegitClient-2",
       "role": "legitimate_client",
       "task": "femnist",
       "node_index": 1,
       "total_nodes": 100,
-      "created_at": "2026-02-22T04:49:45.670933+00:00"
+      "created_at": "2026-02-24T18:04:38.930283+00:00"
     },
-    "node-fem-002-05ff01": {
-      "node_id": "node-fem-002-05ff01",
-      "display_name": "LegitClient-1",
+    "node-fem-002-15f69f": {
+      "node_id": "node-fem-002-15f69f",
+      "display_name": "LegitClient-3",
       "role": "legitimate_client",
       "task": "femnist",
       "node_index": 2,
       "total_nodes": 100,
-      "created_at": "2026-02-22T04:53:15.527776+00:00"
+      "created_at": "2026-02-24T18:04:39.681867+00:00"
     },
-    "node-fem-003-87aa96": {
-      "node_id": "node-fem-003-87aa96",
-      "display_name": "LegitClient-2",
-      "role": "legitimate_client",
+    "node-fem-003-4bbd1e": {
+      "node_id": "node-fem-003-4bbd1e",
+      "display_name": "MaliciousClient-1",
+      "role": "malicious_client",
       "task": "femnist",
       "node_index": 3,
       "total_nodes": 100,
-      "created_at": "2026-02-22T04:53:17.596616+00:00"
-    },
-    "node-fem-004-645321": {
-      "node_id": "node-fem-004-645321",
-      "display_name": "LegitClient-1",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 4,
-      "total_nodes": 100,
-      "created_at": "2026-02-22T04:54:10.817864+00:00"
-    },
-    "node-fem-005-802e2f": {
-      "node_id": "node-fem-005-802e2f",
-      "display_name": "LegitClient-2",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 5,
-      "total_nodes": 100,
-      "created_at": "2026-02-22T04:54:12.882887+00:00"
-    },
-    "node-fem-006-07de3a": {
-      "node_id": "node-fem-006-07de3a",
-      "display_name": "LegitClient-1",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 6,
-      "total_nodes": 100,
-      "created_at": "2026-02-22T04:58:46.916155+00:00"
-    },
-    "node-fem-007-dcad2d": {
-      "node_id": "node-fem-007-dcad2d",
-      "display_name": "LegitClient-2",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 7,
-      "total_nodes": 100,
-      "created_at": "2026-02-22T04:58:48.976153+00:00"
-    },
-    "node-fem-008-05a801": {
-      "node_id": "node-fem-008-05a801",
-      "display_name": "LegitClient-1",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 8,
-      "total_nodes": 100,
-      "created_at": "2026-02-22T05:02:07.618543+00:00"
-    },
-    "node-fem-009-f8ddb3": {
-      "node_id": "node-fem-009-f8ddb3",
-      "display_name": "LegitClient-2",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 9,
-      "total_nodes": 100,
-      "created_at": "2026-02-22T05:02:09.673200+00:00"
-    },
-    "node-fem-010-b0f8e2": {
-      "node_id": "node-fem-010-b0f8e2",
-      "display_name": "LegitClient-3",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 10,
-      "total_nodes": 100,
-      "created_at": "2026-02-22T05:02:11.714183+00:00"
-    },
-    "node-fem-011-df1f33": {
-      "node_id": "node-fem-011-df1f33",
-      "display_name": "LegitClient-1",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 11,
-      "total_nodes": 100,
-      "created_at": "2026-02-22T05:06:58.599416+00:00"
-    },
-    "node-fem-012-14c897": {
-      "node_id": "node-fem-012-14c897",
-      "display_name": "LegitClient-2",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 12,
-      "total_nodes": 100,
-      "created_at": "2026-02-22T05:07:01.539971+00:00"
-    },
-    "node-fem-013-fca149": {
-      "node_id": "node-fem-013-fca149",
-      "display_name": "LegitClient-3",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 13,
-      "total_nodes": 100,
-      "created_at": "2026-02-22T05:07:03.853025+00:00"
-    },
-    "node-fem-014-30f5e8": {
-      "node_id": "node-fem-014-30f5e8",
-      "display_name": "MaliciousClient-1",
-      "role": "malicious_client",
-      "task": "femnist",
-      "node_index": 14,
-      "total_nodes": 100,
-      "created_at": "2026-02-22T05:07:07.144209+00:00"
-    },
-    "node-fem-015-bc7b42": {
-      "node_id": "node-fem-015-bc7b42",
-      "display_name": "LegitClient-1",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 15,
-      "total_nodes": 100,
-      "created_at": "2026-02-24T17:03:01.367195+00:00"
-    },
-    "node-fem-016-d6c93d": {
-      "node_id": "node-fem-016-d6c93d",
-      "display_name": "LegitClient-2",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 16,
-      "total_nodes": 100,
-      "created_at": "2026-02-24T17:03:02.335838+00:00"
-    },
-    "node-fem-017-e76fcd": {
-      "node_id": "node-fem-017-e76fcd",
-      "display_name": "LegitClient-3",
-      "role": "legitimate_client",
-      "task": "femnist",
-      "node_index": 17,
-      "total_nodes": 100,
-      "created_at": "2026-02-24T17:03:03.329377+00:00"
-    },
-    "node-fem-018-79d413": {
-      "node_id": "node-fem-018-79d413",
-      "display_name": "MaliciousClient-1",
-      "role": "malicious_client",
-      "task": "femnist",
-      "node_index": 18,
-      "total_nodes": 100,
-      "created_at": "2026-02-24T17:03:04.358468+00:00"
+      "created_at": "2026-02-24T18:04:40.403453+00:00"
     }
   }
 }

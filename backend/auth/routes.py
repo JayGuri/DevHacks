@@ -1,20 +1,19 @@
 # backend/auth/routes.py — Authentication REST API
 """
-POST  /api/auth/signup          — Register new user
-POST  /api/auth/login           — Authenticate user
-GET   /api/auth/me              — Get current user from JWT
-PATCH /api/auth/subscription    — Upgrade / downgrade subscription tier
-GET   /api/users                — List all users (admin)
-PATCH /api/users/:id/role       — Change user role (admin)
+POST /api/auth/signup  — Register new user
+POST /api/auth/login   — Authenticate user
+GET  /api/auth/me      — Get current user from JWT
+GET  /api/users        — List all users (admin)
+PATCH /api/users/:id/role — Change user role (admin)
+
+MongoDB version using Beanie ODM (async)
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
 from auth.utils import hash_password, verify_password, create_token
 from auth.dependencies import get_current_user, require_team_lead
-from db.database import get_db
 from db.models import User
 
 router = APIRouter()
@@ -40,24 +39,15 @@ class UserResponse(BaseModel):
     name: str
     email: str
     role: str
-    subscriptionTier: str
     createdAt: str
-
-    class Config:
-        from_attributes = True
 
 
 class AuthResponse(BaseModel):
     user: UserResponse
-    token: str
 
 
 class RoleUpdateRequest(BaseModel):
     role: str  # "TEAM_LEAD" | "CONTRIBUTOR"
-
-
-class SubscriptionUpdateRequest(BaseModel):
-    tier: str  # "PRO" | "FREE"
 
 
 # --------------------------------------------------------------------------
@@ -70,7 +60,6 @@ def _user_to_response(user: User) -> dict:
         "name": user.name,
         "email": user.email,
         "role": user.role,
-        "subscriptionTier": user.subscription_tier,
         "createdAt": user.created_at.isoformat() if user.created_at else "",
     }
 
@@ -80,91 +69,85 @@ def _user_to_response(user: User) -> dict:
 # --------------------------------------------------------------------------
 
 @router.post("/auth/signup", response_model=AuthResponse)
-def signup(body: SignupRequest, db: Session = Depends(get_db)):
+async def signup(body: SignupRequest, response: Response):
     """Register a new user."""
-    existing = db.query(User).filter(User.email == body.email).first()
+    # Check if email already exists
+    existing = await User.find_one(User.email == body.email)
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
 
+    # Create new user
     user = User(
         name=body.name,
         email=body.email,
         hashed_password=hash_password(body.password),
     )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    await user.insert()
 
-    token = create_token(user.id, user.role, user.subscription_tier)
-    return {"user": _user_to_response(user), "token": token}
+    token = create_token(user.id, user.role)
+    response.set_cookie(
+        key="arfl-token", 
+        value=token, 
+        httponly=True, 
+        samesite="lax", 
+        secure=True, 
+        max_age=3600*24*7 # 7 days
+    )
+    return {"user": _user_to_response(user)}
 
 
 @router.post("/auth/login", response_model=AuthResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db)):
-    """Authenticate and return user + JWT."""
-    user = db.query(User).filter(User.email == body.email).first()
+async def login(body: LoginRequest, response: Response):
+    """Authenticate and return user."""
+    user = await User.find_one(User.email == body.email)
     if not user or not verify_password(body.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    token = create_token(user.id, user.role, user.subscription_tier)
-    return {"user": _user_to_response(user), "token": token}
+    token = create_token(user.id, user.role)
+    response.set_cookie(
+        key="arfl-token", 
+        value=token, 
+        httponly=True, 
+        samesite="lax", 
+        secure=True, 
+        max_age=3600*24*7 # 7 days
+    )
+    return {"user": _user_to_response(user)}
+
+@router.post("/auth/logout")
+async def logout(response: Response):
+    """Logout the user by clearing the cookie."""
+    response.delete_cookie(key="arfl-token")
+    return {"message": "Logged out successfully"}
 
 
 @router.get("/auth/me")
-def get_me(current_user: User = Depends(get_current_user)):
+async def get_me(current_user: User = get_current_user):
     """Return the current authenticated user."""
     return {"user": _user_to_response(current_user)}
 
 
-@router.patch("/auth/subscription")
-def update_subscription(
-    body: SubscriptionUpdateRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Upgrade or downgrade the current user's subscription tier.
-
-    Called by the frontend after a successful Razorpay payment. Returns a
-    new JWT so Pro features unlock immediately without requiring re-login.
-    """
-    if body.tier not in ("FREE", "PRO"):
-        raise HTTPException(status_code=400, detail="Invalid tier. Must be FREE or PRO.")
-
-    current_user.subscription_tier = body.tier
-    db.commit()
-    db.refresh(current_user)
-
-    # Re-issue token so the tier claim in the JWT is updated immediately
-    new_token = create_token(current_user.id, current_user.role, current_user.subscription_tier)
-    return {"user": _user_to_response(current_user), "token": new_token}
-
-
 @router.get("/users")
-def list_users(
-    db: Session = Depends(get_db),
-    _: User = Depends(require_team_lead),
-):
+async def list_users(team_lead_user: User = require_team_lead):
     """List all users (admin only)."""
-    users = db.query(User).all()
+    users = await User.find_all().to_list()
     return [_user_to_response(u) for u in users]
 
 
 @router.patch("/users/{user_id}/role")
-def update_role(
+async def update_role(
     user_id: str,
     body: RoleUpdateRequest,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_team_lead),
+    team_lead_user: User = require_team_lead,
 ):
     """Change a user's role (admin only)."""
     if body.role not in ("TEAM_LEAD", "CONTRIBUTOR"):
         raise HTTPException(status_code=400, detail="Invalid role")
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = await User.find_one(User.id == user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     user.role = body.role
-    db.commit()
-    db.refresh(user)
+    await user.save()
     return _user_to_response(user)

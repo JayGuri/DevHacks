@@ -92,17 +92,19 @@ class KeyAgreementManager:
         self.client_id = client_id
         self.pairwise_keys: Dict[int, bytes] = {}
         
+        import secrets
+        import random as py_random
         # Generate private key (random 256-bit exponent)
         if seed is not None:
+            # Deterministic, insecure mode solely for reproducible testing
             np.random.seed(seed + client_id)
-        
-        # Private key: random integer in [2, 2^256]
-        # Use Python's random for large integers
-        import random as py_random
-        if seed is not None:
             py_random.seed(seed + client_id)
-        
-        self.private_key = py_random.randint(2, 2**256)
+            self.private_key = py_random.randint(2, 2**256)
+        else:
+            # Cryptographically secure random number generation
+            self.private_key = secrets.randbits(256)
+            if self.private_key < 2:
+                self.private_key = 2
         
         # Public key: g^private_key mod p
         self.public_key = pow(DH_GENERATOR, self.private_key, DH_PRIME)
@@ -211,10 +213,10 @@ class KeyAgreementManager:
         # Derive round-specific seed from shared key
         seed_input = shared_key + str(round_number).encode('utf-8')
         seed_hash = hashlib.sha256(seed_input).digest()
-        seed = int.from_bytes(seed_hash[:8], byteorder='big') % (2**32)
+        seed = int.from_bytes(seed_hash, byteorder='big')
         
-        # Generate pseudorandom mask
-        rng = np.random.RandomState(seed)
+        # Generate pseudorandom mask via PCG64
+        rng = np.random.default_rng(seed)
         mask = rng.standard_normal(shape)
         
         # Determine sign: lower ID adds positive, higher ID adds negative

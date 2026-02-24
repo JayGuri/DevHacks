@@ -10,16 +10,18 @@ import { API_BASE_URL } from "./config";
 
 const TOKEN_KEY = "arfl-token";
 
+// Token handlers modified to no-op since backend sets secure HttpOnly cookies
 export function getToken() {
-  return localStorage.getItem(TOKEN_KEY);
+  return null;
 }
 
 export function setToken(token) {
-  localStorage.setItem(TOKEN_KEY, token);
+  // no-op
 }
 
 export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY);
+  // Call logout endpoint explicitly to clear the cookie
+  apiFetch("/auth/logout", { method: "POST" }).catch(console.error);
 }
 
 // ────────────────────────────────────────────────────────
@@ -27,16 +29,15 @@ export function clearToken() {
 // ────────────────────────────────────────────────────────
 
 export async function apiFetch(path, options = {}) {
-  const token = getToken();
   const headers = {
     "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...options.headers,
   };
 
   const res = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers,
+    credentials: "include", // Crucial for sending secure cookies across origins
   });
 
   if (!res.ok) {
