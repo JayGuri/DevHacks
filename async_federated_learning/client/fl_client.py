@@ -585,8 +585,8 @@ async def main():
     auth_token = os.environ.get("AUTH_TOKEN", "")
     dataset = os.environ.get("DATASET", "femnist")
     if not auth_token:
-        import urllib.request, json
-        rest_url = server_url.replace("ws://", "http://").replace("/ws/fl", "/nodes/register")
+        import urllib.request, json, time
+        rest_url = server_url.replace("ws://", "http://").replace("wss://", "https://").replace("/ws/fl", "/nodes/register")
         data = json.dumps({
             "role": client_role,
             "display_name": display_name,
@@ -594,14 +594,20 @@ async def main():
             "task": dataset
         }).encode("utf-8")
         req = urllib.request.Request(rest_url, data=data, headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req) as resp:
-                resp_data = json.loads(resp.read().decode("utf-8"))
-                auth_token = resp_data.get("token", "")
-                if client_id == "unknown-client":
-                    client_id = resp_data.get("node_id", client_id)
-        except Exception as e:
-            print(f"Auto-registration failed: {e}")
+        
+        for attempt in range(5):
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    resp_data = json.loads(resp.read().decode("utf-8"))
+                    auth_token = resp_data.get("token", "")
+                    if client_id == "unknown-client":
+                        client_id = resp_data.get("node_id", client_id)
+                break  # Success
+            except Exception as e:
+                print(f"Attempt {attempt+1} auto-registration failed: {e}. Retrying...")
+                time.sleep(2)
+        else:
+            print("Auto-registration failed after all attempts.")
     data_partition = int(os.environ.get("NODE_INDEX", os.environ.get("DATA_PARTITION", "0")))
     total_nodes = int(os.environ.get("TOTAL_NODES", "10"))
     local_epochs = int(os.environ.get("LOCAL_EPOCHS", "5"))

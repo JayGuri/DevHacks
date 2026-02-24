@@ -41,7 +41,12 @@ def register_node(base_http: str, role: str, display_name: str, task: str) -> di
                 continue
             body = e.read().decode("utf-8")
             raise RuntimeError(f"Registration failed: {e.code}, {body}")
-    raise RuntimeError("Failed to register node after 5 attempts due to naming conflicts.")
+        except Exception as e:
+            import time
+            print(f"Attempt {attempt+1} failed to register {display_name}: {e}. Retrying...")
+            time.sleep(2)
+            continue
+    raise RuntimeError(f"Failed to register node {display_name} after 5 attempts due to network errors or conflicts.")
 
 
 async def main():
