@@ -1,4 +1,4 @@
-# FedBuff: Asynchronous Robust Federated Learning (ARFL)
+# Asynchronous Robust Federated Learning (ARFL)
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-green.svg)](https://fastapi.tiangolo.com/)
