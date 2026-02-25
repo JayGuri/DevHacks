@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Client Dropout / Heartbeat
     # ------------------------------------------------------------------
-    CLIENT_HEARTBEAT_TIMEOUT: float = 60.0
+    CLIENT_HEARTBEAT_TIMEOUT: float = 300.0
     MIN_CLIENTS_FOR_AGGREGATION: int = 1
     HEARTBEAT_CHECK_INTERVAL: float = 10.0
 

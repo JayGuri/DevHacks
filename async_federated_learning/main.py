@@ -648,7 +648,7 @@ if __name__ == "__main__":
         host=settings.SERVER_HOST,
         port=settings.SERVER_PORT,
         log_level=settings.LOG_LEVEL.lower(),
-        ws_ping_interval=20,
-        ws_ping_timeout=20,
+        ws_ping_interval=None,
+        ws_ping_timeout=None,
         ws_max_size=2**28,  # 256 MB — compressed weights are much smaller
     )
