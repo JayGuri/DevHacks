@@ -27,13 +27,13 @@ from models.lstm import evaluate_text_model
 # from data.shakespeare_loader import ShakespearePartitioner  # Not needed for MNIST MongoDB test
 from server.model_history import ModelHistory
 from server.fl_server import (
-    init_jwt,
     verify_token,
     connected_clients,
     require_role,
     AsyncBuffer,
     handle_websocket,
     heartbeat_checker,
+    update_client_trust,
 )
 from server.node_registry import NodeRegistry
 from aggregation.aggregator import Aggregator
@@ -118,7 +118,7 @@ async def aggregation_callback(updates: list, task: str) -> None:
             "duration": round(duration, 4),
         })
 
-        # Emit trust scores
+        # Emit trust scores and persist to connected_clients state
         for client_id, score in result.trust_scores.items():
             await emit_event("trust_score", {
                 "client_id": client_id,
@@ -126,6 +126,20 @@ async def aggregation_callback(updates: list, task: str) -> None:
                 "score": score,
                 "round": new_round,
             })
+            update_client_trust(client_id, score)
+            logger.info(
+                "Trust score: client=%s, task=%s, round=%d, trust=%.4f",
+                client_id, task, new_round, score,
+            )
+
+        if result.trust_scores:
+            scores_summary = ", ".join(
+                f"{cid}: {s:.2f}" for cid, s in result.trust_scores.items()
+            )
+            logger.info(
+                "Trust summary: task=%s, round=%d, scores={%s}",
+                task, new_round, scores_summary,
+            )
 
         # Emit per-client staleness report
         staleness_values = result.metadata.get("staleness_values", {})
@@ -396,9 +410,23 @@ async def health():
     """Health check endpoint."""
     tasks_info = {}
     for task in settings.SUPPORTED_TASKS:
+        task_clients = [
+            cid for cid, info in connected_clients.items()
+            if info.get("task") == task
+        ]
+        trust_map = {}
+        if aggregator is not None:
+            trust_map = {
+                cid: aggregator._trust_history[cid]
+                for cid in task_clients
+                if cid in aggregator._trust_history
+            }
+        avg_trust = (sum(trust_map.values()) / len(trust_map)) if trust_map else None
         tasks_info[task] = {
             "round": model_history.get_round(task) if model_history else 0,
             "buffer_size": fl_buffer.size(task) if fl_buffer else 0,
+            "trust_scores": trust_map,
+            "avg_trust": round(avg_trust, 4) if avg_trust is not None else None,
         }
 
     result = {
@@ -511,8 +539,40 @@ async def admin_clients(payload: dict = Depends(require_role("server"))):
             "task": info["task"],
             "chunk_id": info.get("chunk_id", -1),
             "connected_at": info["connected_at"],
+            "trust_score": info.get("trust_score"),
+            "trust_updated_at": info.get("trust_updated_at"),
         })
     return {"clients": clients_list, "count": len(clients_list)}
+
+
+@app.get("/trust/scores")
+async def trust_scores(task: str = Query(default=None)):
+    """Return per-client trust scores from the aggregator trust history.
+
+    Optional ?task= filter returns only clients registered for that task.
+    """
+    if aggregator is None:
+        return JSONResponse(status_code=503, content={"error": "Aggregator not initialised"})
+
+    scores = dict(aggregator._trust_history)
+
+    if task is not None:
+        if task not in settings.SUPPORTED_TASKS:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Unsupported task: {task}. Supported: {settings.SUPPORTED_TASKS}"},
+            )
+        task_clients = {
+            cid for cid, info in connected_clients.items()
+            if info.get("task") == task
+        }
+        scores = {cid: s for cid, s in scores.items() if cid in task_clients}
+
+    return {
+        "trust_scores": scores,
+        "round": model_history.get_round(task) if (task and model_history) else None,
+        "task": task,
+    }
 
 
 @app.get("/chunks/status")

@@ -323,11 +323,9 @@ def test_fastapi_endpoints():
         from main import app
         import main as main_module
         from server.node_registry import NodeRegistry
-        from server.fl_server import init_jwt
 
         # Manually initialize — TestClient may not run lifespan
         jwt_secret = os.environ["JWT_SECRET"]
-        init_jwt(jwt_secret)
         main_module.node_registry = NodeRegistry(
             registry_file=reg_path,
             jwt_secret=jwt_secret,

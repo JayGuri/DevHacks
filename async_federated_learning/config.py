@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     STALENESS_DECAY_FN: str = "polynomial"   # "exponential" | "polynomial"
     STALENESS_LAMBDA: float = 0.1            # lambda for exponential decay
     STALENESS_REPUTATION_WEIGHT: float = 0.5 # 0=pure staleness, 1=pure reputation
+    TRUST_EMA_BETA: float = 0.7              # EMA smoothing for trust history
 
     # ------------------------------------------------------------------
     # Network Simulation

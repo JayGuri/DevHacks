@@ -23,12 +23,8 @@ logger = logging.getLogger("fedbuff.server")
 connected_clients: dict = {}
 # {client_id: {"websocket": ws, "role": str, "display_name": str,
 #              "participant": str, "task": str, "connected_at": float,
-#              "last_heartbeat": float, "is_joining": bool}}
-
-
-def init_jwt(secret: str) -> None:
-    """Deprecated no-op — JWT secret is now read from JWT_SECRET env var via core.jwt_auth."""
-    logger.info("init_jwt() called (no-op — JWT_SECRET sourced from environment).")
+#              "last_heartbeat": float, "is_joining": bool,
+#              "trust_score": float | None, "trust_updated_at": float | None}}
 
 
 def verify_token(token: str) -> dict:
@@ -58,6 +54,8 @@ def register_client(client_id: str, websocket, role: str, display_name: str,
         "connected_at": time.time(),
         "last_heartbeat": time.time(),
         "is_joining": True,   # grace period until first weight_update received
+        "trust_score": None,
+        "trust_updated_at": None,
     }
     logger.info(
         "Client registered: %s (%s) participant=%s task=%s chunk=%d",
@@ -70,6 +68,13 @@ def update_heartbeat(client_id: str) -> None:
     if client_id in connected_clients:
         connected_clients[client_id]["last_heartbeat"] = time.time()
         connected_clients[client_id]["is_joining"] = False
+
+
+def update_client_trust(client_id: str, score: float) -> None:
+    """Store post-aggregation trust score on the client's connection record."""
+    if client_id in connected_clients:
+        connected_clients[client_id]["trust_score"] = score
+        connected_clients[client_id]["trust_updated_at"] = time.time()
 
 
 def deregister_client(client_id: str) -> None:
@@ -568,6 +573,7 @@ async def handle_websocket(
                                 continue
 
                         await buffer.put(update, task)
+                        current_trust = connected_clients.get(client_id, {}).get("trust_score")
                         await emit_event("update_received", {
                             "client_id": client_id,
                             "task": task,
@@ -575,11 +581,13 @@ async def handle_websocket(
                             "num_samples": num_samples,
                             "local_loss": local_loss,
                             "norm": norm,
+                            "trust_score": current_trust,
                         })
+                        trust_fmt = f"{current_trust:.4f}" if current_trust is not None else "N/A"
                         logger.info(
                             "Update received: client=%s, task=%s, round=%d, "
-                            "norm=%.4f, samples=%d, loss=%.6f",
-                            client_id, task, round_num, norm, num_samples, local_loss,
+                            "norm=%.4f, samples=%d, loss=%.6f, trust=%s",
+                            client_id, task, round_num, norm, num_samples, local_loss, trust_fmt,
                         )
 
                 elif msg_type == "heartbeat":

@@ -129,14 +129,28 @@ app.include_router(training_router, prefix="/api", tags=["Training"])
 async def health_check_endpoint():
     """Health check with MongoDB status."""
     from training.coordinator import _coordinators
-    
+
     mongo_status = await health_check()
-    
+
+    # Build per-session trust summary (avg trust only — no per-node detail at health level)
+    sessions_info = {}
+    for project_id, coordinator in _coordinators.items():
+        nodes_dict = coordinator.node_manager.get_all_nodes_dict()
+        trust_values = [float(n.get("trust", 1.0)) for n in nodes_dict.values()]
+        avg_trust = round(sum(trust_values) / len(trust_values), 4) if trust_values else None
+        sessions_info[project_id] = {
+            "round": coordinator.current_round,
+            "status": coordinator.status,
+            "node_count": len(nodes_dict),
+            "avg_trust": avg_trust,
+        }
+
     return {
         "status": "ok",
         "service": "arfl-backend-mongodb",
         "database": mongo_status,
         "activeTrainingSessions": len(_coordinators),
+        "sessions": sessions_info,
     }
 
 

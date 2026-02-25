@@ -230,6 +230,43 @@ async def unblock_node(
     return result
 
 
+@router.get("/projects/{project_id}/trust/scores")
+async def get_trust_scores(
+    project_id: str,
+    current_user: User = Depends(require_team_lead),
+):
+    """Return per-node trust scores for a project. Requires TEAM_LEAD role.
+
+    Merges trust from node_manager (SABD-updated node.trust) and the
+    fl_processor EMA history (more granular, overrides node_manager on conflict).
+    """
+    from training.fl_processor import get_fl_processor
+
+    coordinator = get_coordinator(project_id)
+    if not coordinator:
+        raise HTTPException(status_code=404, detail="No active training session")
+
+    # Seed from node_manager (available immediately after training starts)
+    trust_scores = {}
+    nodes_list = coordinator.node_manager.get_all_nodes_dict()
+    for node_info in nodes_list:
+        node_id = node_info.get("nodeId")
+        if node_id:
+            trust_scores[node_id] = round(float(node_info.get("trust", 1.0)), 4)
+
+    # Override with fl_processor EMA trust where available (more precise)
+    processor = get_fl_processor(project_id, coordinator.config)
+    for client_id, ema_trust in processor._trust_scores.items():
+        trust_scores[client_id] = round(float(ema_trust), 4)
+
+    return {
+        "project_id": project_id,
+        "trust_scores": trust_scores,
+        "round": coordinator.current_round,
+        "status": coordinator.status,
+    }
+
+
 @router.post("/projects/{project_id}/training/submit-update")
 async def submit_gradient_update(
     project_id: str,
