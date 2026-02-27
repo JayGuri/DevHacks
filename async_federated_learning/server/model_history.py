@@ -123,8 +123,11 @@ class ModelHistory:
             for name, param in model.named_parameters():
                 weights[name] = param.data.cpu().numpy().copy()
 
+            serialized_weights = self.serialize_weights(weights)
+
             self.models[task] = {
                 "weights": weights,
+                "weights_serialized": serialized_weights,
                 "round": 0,
                 "version": self._compute_version(weights),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -154,8 +157,11 @@ class ModelHistory:
             return {"weights": {}, "round": 0, "version": "", "timestamp": ""}
 
         model_info = self.models[task]
-        # Serialize weights for WebSocket transmission
-        serialized = self.serialize_weights(model_info["weights"])
+        # Use cached serialization to keep connect-time path fast.
+        serialized = model_info.get("weights_serialized")
+        if not serialized:
+            serialized = self.serialize_weights(model_info["weights"])
+            model_info["weights_serialized"] = serialized
         return {
             "weights": serialized,
             "round": model_info["round"],
@@ -188,6 +194,7 @@ class ModelHistory:
             k: old_weights[k] + new_weights[k] if k in common_keys else old_weights[k]
             for k in old_weights
         }
+        self.models[task]["weights_serialized"] = self.serialize_weights(self.models[task]["weights"])
         self.models[task]["round"] += 1
         self.models[task]["version"] = self._compute_version(new_weights)
         self.models[task]["timestamp"] = datetime.now(timezone.utc).isoformat()

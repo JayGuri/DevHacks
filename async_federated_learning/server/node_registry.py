@@ -141,6 +141,34 @@ class NodeRegistry:
         logger.info("Removed node: %s", node_id)
         return True
 
+    def clear_all(self) -> int:
+        """Remove ALL nodes from the registry and reset task counts.
+
+        Useful on server startup to prevent stale registrations from
+        previous sessions from permanently consuming node slots.
+
+        Returns:
+            Number of nodes that were cleared.
+        """
+        count = len(self._nodes)
+        self._nodes = {}
+        self._task_counts = {}
+        self._save()
+        if count:
+            logger.info("Cleared %d stale node(s) from registry on startup.", count)
+        return count
+
+    def clear_task(self, task: str) -> int:
+        """Remove all nodes for a specific task. Returns count removed."""
+        to_remove = [nid for nid, info in self._nodes.items() if info["task"] == task]
+        for nid in to_remove:
+            del self._nodes[nid]
+        self._task_counts[task] = 0
+        self._save()
+        if to_remove:
+            logger.info("Cleared %d node(s) for task=%s.", len(to_remove), task)
+        return len(to_remove)
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------

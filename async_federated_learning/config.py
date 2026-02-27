@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Client Dropout / Heartbeat
     # ------------------------------------------------------------------
-    CLIENT_HEARTBEAT_TIMEOUT: float = 300.0
+    CLIENT_HEARTBEAT_TIMEOUT: float = 600.0
     MIN_CLIENTS_FOR_AGGREGATION: int = 1
     HEARTBEAT_CHECK_INTERVAL: float = 10.0
 
@@ -144,6 +144,11 @@ class Settings(BaseSettings):
     use_gatekeeper: bool = True
     gatekeeper_l2_factor: float = 3.0
     gatekeeper_max_threshold: float = 1000.0
+
+    # ------------------------------------------------------------------
+    # Privacy — Secure Aggregation
+    # ------------------------------------------------------------------
+    USE_SECURE_AGGREGATION: bool = True
 
     # ------------------------------------------------------------------
     # Multimodal / text model settings
@@ -271,6 +276,9 @@ class Settings(BaseSettings):
                 ("use_gatekeeper", self.use_gatekeeper),
                 ("gatekeeper_l2_factor", self.gatekeeper_l2_factor),
                 ("gatekeeper_max_threshold", self.gatekeeper_max_threshold),
+            ],
+            "Secure Aggregation": [
+                ("USE_SECURE_AGGREGATION", self.USE_SECURE_AGGREGATION),
             ],
             "Differential Privacy": [
                 ("USE_DP", self.USE_DP),

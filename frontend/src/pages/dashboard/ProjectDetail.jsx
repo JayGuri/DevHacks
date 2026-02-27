@@ -41,6 +41,7 @@ import SABDPanel from "@/components/fl/SABDPanel";
 import ContributorWorkspace from "@/components/fl/ContributorWorkspace";
 import ControlPanel from "@/components/admin/ControlPanel";
 import NetworkTopology from "@/components/fl/NetworkTopology";
+import LiveCLIMetrics from "@/components/fl/LiveCLIMetrics";
 import PageSkeleton from "@/components/dashboard/PageSkeleton";
 import AnimatedNumber from "@/components/ui/AnimatedNumber";
 import { fadeIn } from "@/lib/animations";
@@ -66,8 +67,8 @@ import {
 } from "@/components/ui/select";
 
 const SESSION_KEY = (id) => `tab-${id}-project-detail`;
-// "workspace" is contributor-only; "server"/"admin" are team-lead-only
-const VALID_TABS = ["mynode", "server", "admin", "workspace"];
+// "workspace" is contributor-only; "server"/"admin"/"cli" are team-lead-only
+const VALID_TABS = ["mynode", "server", "cli", "admin", "workspace"];
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -86,8 +87,8 @@ export default function ProjectDetail() {
   const rawTab =
     (urlTab && VALID_TABS.includes(urlTab) ? urlTab : null) ||
     (savedTab && VALID_TABS.includes(savedTab) ? savedTab
-    : isTeamLead ? "mynode"
-    : "workspace");
+      : isTeamLead ? "mynode"
+        : "workspace");
 
   // Enforce role-based tab access: contributors → workspace only; leads → mynode/server/admin
   const defaultTab = (() => {
@@ -147,7 +148,7 @@ export default function ProjectDetail() {
   const avgTrust =
     fl.nodes.length > 0 ?
       fl.nodes.reduce((s, n) => s + n.trust, 0) / fl.nodes.length
-    : 0;
+      : 0;
 
   const isPrivate = fl.project.visibility === "private";
   const visibilityBadge =
@@ -156,7 +157,7 @@ export default function ProjectDetail() {
         <LockKeyhole size={10} className="mr-1" />
         Private
       </Badge>
-    : <Badge className="bg-emerald-500/10 text-xs text-emerald-600 dark:text-emerald-400">
+      : <Badge className="bg-emerald-500/10 text-xs text-emerald-600 dark:text-emerald-400">
         <Globe size={10} className="mr-1" />
         Public
       </Badge>;
@@ -190,6 +191,9 @@ export default function ProjectDetail() {
           )}
           {isTeamLead && (
             <TabsTrigger value="server">Server Metrics</TabsTrigger>
+          )}
+          {isTeamLead && (
+            <TabsTrigger value="cli">Live CLI</TabsTrigger>
           )}
           {amLead && <TabsTrigger value="admin">Project Admin</TabsTrigger>}
         </TabsList>
@@ -244,9 +248,9 @@ export default function ProjectDetail() {
                           className="flex-1 h-2"
                           indicatorClassName={
                             trust >= 0.7 ? "bg-emerald-500"
-                            : trust >= 0.4 ?
-                              "bg-amber-500"
-                            : "bg-rose-500"
+                              : trust >= 0.4 ?
+                                "bg-amber-500"
+                                : "bg-rose-500"
                           }
                         />
                         <span className="mono-data w-14 text-right text-xs">
@@ -402,6 +406,17 @@ export default function ProjectDetail() {
               </div>
             )}
 
+            {/* Live CLI Stream — Team Lead only */}
+            {defaultTab === "cli" && isTeamLead && (
+              <div className="space-y-4">
+                <div className="mb-4">
+                  <h2 className="font-display text-lg sm:text-xl">Terminal</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">Real-time metrics streaming from the federated learning backend Engine.</p>
+                </div>
+                <LiveCLIMetrics projectId={id} isEmbedded={false} />
+              </div>
+            )}
+
             {/* Project Admin */}
             {defaultTab === "admin" && amLead && (
               <div className="space-y-6">
@@ -514,7 +529,7 @@ function ProjectAdminTab({ fl, projectId, currentUser, store, viewMode }) {
             <p className="py-4 text-center text-sm text-muted-foreground">
               No pending requests
             </p>
-          : <div className="overflow-x-auto rounded-md border border-border">
+            : <div className="overflow-x-auto rounded-md border border-border">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -611,7 +626,7 @@ function ProjectAdminTab({ fl, projectId, currentUser, store, viewMode }) {
                       <Badge variant="outline" className="text-xs">
                         {m.globalRole === "TEAM_LEAD" ?
                           "Team Lead"
-                        : "Contributor"}
+                          : "Contributor"}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -632,7 +647,7 @@ function ProjectAdminTab({ fl, projectId, currentUser, store, viewMode }) {
                             </SelectItem>
                           </SelectContent>
                         </Select>
-                      : <Badge
+                        : <Badge
                           variant="outline"
                           className="border-cyan-500 text-cyan-600 dark:text-cyan-400"
                         >

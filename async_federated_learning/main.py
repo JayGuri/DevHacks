@@ -34,6 +34,7 @@ from server.fl_server import (
     handle_websocket,
     heartbeat_checker,
     update_client_trust,
+    send_global_model_message,
 )
 from server.node_registry import NodeRegistry
 from aggregation.aggregator import Aggregator
@@ -91,6 +92,15 @@ async def aggregation_callback(updates: list, task: str) -> None:
         "Aggregation triggered: task=%s, round=%d, updates=%d, active_clients=%d",
         task, current_round + 1, len(updates), active_count,
     )
+
+    # Emit aggregation_triggered event for realtime CLI dashboard
+    await emit_event("aggregation_triggered", {
+        "task": task,
+        "round": current_round + 1,
+        "updates_count": len(updates),
+        "active_clients": active_count,
+        "strategy": settings.AGGREGATION_STRATEGY,
+    })
 
     # Run aggregation
     result = aggregator.aggregate(updates, current_round, task)
@@ -154,15 +164,6 @@ async def aggregation_callback(updates: list, task: str) -> None:
 
         # Broadcast updated global model to all connected clients for this task
         latest = model_history.get_latest(task)
-        global_model_msg = {
-            "type": "global_model",
-            "task": task,
-            "round_num": latest["round"],
-            "weights": latest["weights"],
-            "version": latest["version"],
-            "timestamp": latest["timestamp"],
-            "personalization_alpha": settings.PERSONALIZATION_ALPHA if settings.PERSONALIZATION_ENABLED else 0.0,
-        }
         # Build trust report to send alongside the global model
         trust_report_msg = {
             "type": "trust_report",
@@ -177,7 +178,16 @@ async def aggregation_callback(updates: list, task: str) -> None:
         for cid, client_info in list(connected_clients.items()):
             if client_info.get("task") == task:
                 try:
-                    await client_info["websocket"].send_json(global_model_msg)
+                    await send_global_model_message(
+                        client_info["websocket"],
+                        task=task,
+                        round_num=latest["round"],
+                        weights=latest["weights"],
+                        version=latest["version"],
+                        timestamp=latest["timestamp"],
+                        assigned_chunk=client_info.get("chunk_id", -1),
+                        client_id=cid,
+                    )
                     await client_info["websocket"].send_json(trust_report_msg)
                 except Exception as e:
                     logger.warning("Failed to send global model to %s: %s", cid, e)
@@ -254,6 +264,10 @@ async def lifespan(app: FastAPI):
         jwt_secret=settings.JWT_SECRET,
         max_nodes_per_task=settings.MAX_NODES_PER_TASK,
     )
+    # Clear stale nodes from previous sessions so slots are freed.
+    # In-memory connected_clients is already empty on startup, so old registry
+    # entries are orphaned and would permanently block new registrations.
+    node_registry.clear_all()
     logger.info(
         "NodeRegistry initialized: file=%s, max_nodes_per_task=%d, existing_nodes=%d",
         settings.NODE_REGISTRY_FILE,
@@ -648,7 +662,8 @@ if __name__ == "__main__":
         host=settings.SERVER_HOST,
         port=settings.SERVER_PORT,
         log_level=settings.LOG_LEVEL.lower(),
-        ws_ping_interval=None,
-        ws_ping_timeout=None,
+        ws="wsproto",  # Use wsproto instead of websockets — avoids legacy protocol's concurrent-write AssertionError when proxy PINGs arrive during chunk delivery
+        ws_ping_interval=None,  # Disabled — no server pings; avoids write contention
+        ws_ping_timeout=None,   # Disabled — no server-initiated pings to timeout
         ws_max_size=2**28,  # 256 MB — compressed weights are much smaller
     )

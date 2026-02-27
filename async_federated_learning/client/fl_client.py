@@ -24,8 +24,9 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.cnn import get_model, VOCAB_SHAKESPEARE
-from privacy.dp import PrivacyEngine
 from attacks.byzantine import MaliciousTrainer
+from privacy.dp import PrivacyEngine
+from privacy.secure_aggregation import SecureAggregationClient
 
 logger = logging.getLogger("fedbuff.client")
 
@@ -409,77 +410,164 @@ def deserialize_weights(b64_str: str) -> dict:
 class WSClient:
     """WebSocket client for communicating with the FedBuff server."""
 
-    def __init__(self, server_url: str, auth_token: str, client_id: str,
-                 task: str, on_global_model, on_rejected):
-        self.server_url = server_url
+    def __init__(self, uri: str, auth_token: str, client_id: str, participant: str, task: str, role: str, config):
+        self.uri = uri
         self.auth_token = auth_token
         self.client_id = client_id
+        self.participant = participant
         self.task = task
-        self.on_global_model = on_global_model
-        self.on_rejected = on_rejected
+        self.role = role
+        self.config = config
         self.ws = None
         self._connected = False
+        self._disconnect_event = asyncio.Event()  # Signalled when connection is lost
+        self.event_handlers = {}
+        self.current_round = 0 # Track current global round for SA
+        self._global_model_chunks = None
+        self._last_chunk_time = 0.0  # monotonic timestamp of last chunk receipt — used for chunk-aware timeout
 
-    async def connect(self) -> None:
-        """Connect to server with exponential backoff retry: [2, 4, 8, 16, 32] seconds."""
+        # ── Setup Secure Aggregation Client ──
+        # Extract integer ID for Diffie-Hellman if possible
+        try:
+            numeric_id = int(client_id.replace("client_", ""))
+        except ValueError:
+            numeric_id = abs(hash(client_id)) % (10 ** 8)
+            
+        use_sa = getattr(config, 'USE_SECURE_AGGREGATION', False)
+        self.sa_client = SecureAggregationClient(client_id=numeric_id, enabled=use_sa)
+        self.numeric_id = numeric_id
+
+    def on(self, event_name: str, handler):
+        """Register an event handler."""
+        self.event_handlers[event_name] = handler
+
+    async def _fire_event(self, event_name: str, *args, **kwargs):
+        """Fire an event, calling its registered handler."""
+        handler = self.event_handlers.get(event_name)
+        if handler:
+            await handler(*args, **kwargs)
+        else:
+            logger.warning("No handler registered for event: %s", event_name)
+
+    def _serialize_weights(self, weights: dict) -> str:
+        """numpy arrays -> lists -> msgpack bytes -> zlib compress -> base64 string."""
+        import zlib
+        serializable = {}
+        for key, val in weights.items():
+            serializable[key] = val.tolist()
+        packed = msgpack.packb(serializable, use_bin_type=True)
+        compressed = zlib.compress(packed, level=6)
+        return base64.b64encode(compressed).decode("utf-8")
+
+    def _deserialize_weights(self, b64_str: str) -> dict:
+        """Reverses serialize_weights. Auto-detects zlib compression."""
+        import zlib
+        raw = base64.b64decode(b64_str)
+        # Auto-detect zlib compression (magic byte 0x78)
+        try:
+            raw = zlib.decompress(raw)
+        except zlib.error:
+            pass  # Not compressed — treat as raw msgpack
+        unpacked = msgpack.unpackb(raw, raw=False)
+        weights = {}
+        for key, val in unpacked.items():
+            k = key if isinstance(key, str) else key.decode("utf-8")
+            weights[k] = np.array(val, dtype=np.float32)
+        return weights
+
+    async def connect(self, max_retries: int = 10) -> asyncio.Task:
+        """Connect to server with exponential backoff retry: [2, 4, 8, 16, 32] seconds.
+
+        Args:
+            max_retries: Maximum number of connection attempts before giving up.
+        """
         import websockets
 
-        url = f"{self.server_url}?token={self.auth_token}&task={self.task}"
+        url = f"{self.uri}?client_id={self.client_id}&task={self.task}&role={self.role}&participant={self.participant}"
+        if self.auth_token:
+            url += f"&token={self.auth_token}"
+
         backoff_delays = [2, 4, 8, 16, 32]
         attempt = 0
 
-        while True:
+        while attempt < max_retries:
             try:
                 self.ws = await websockets.connect(
                     url,
-                    ping_interval=None,
-                    ping_timeout=None,
+                    ping_interval=None,  # Disabled — client pings cause concurrent-write crashes in server's legacy websockets protocol during chunk delivery
+                    ping_timeout=None,   # Disabled — no pings to timeout
                     max_size=100 * 1024 * 1024,  # 100MB max message
                 )
                 self._connected = True
                 logger.info(
                     "Connected to server: %s (client=%s, task=%s)",
-                    self.server_url, self.client_id, self.task,
+                    self.uri, self.client_id, self.task,
                 )
-                return
+
+                # Send public key if secure aggregation is enabled
+                if self.sa_client.enabled:
+                    pub_key = self.sa_client.get_public_key()
+                    if pub_key:
+                        await self.ws.send(json.dumps({
+                            "type": "public_key",
+                            "client_id": self.client_id,
+                            "task": self.task,
+                            "public_key": pub_key
+                        }))
+                        logger.info("Sent public key for secure aggregation.")
+
+                # Start message listener loop
+                return asyncio.create_task(self.listen_loop())
             except Exception as e:
                 delay = backoff_delays[min(attempt, len(backoff_delays) - 1)]
                 logger.warning(
-                    "Connection failed (attempt %d): %s. Retrying in %ds...",
-                    attempt + 1, e, delay,
+                    "Connection failed (attempt %d/%d): %s. Retrying in %ds...",
+                    attempt + 1, max_retries, e, delay,
                 )
                 await asyncio.sleep(delay)
                 attempt += 1
 
-    async def send_update(self, update: dict) -> None:
-        """
-        Sends JSON weight_update message.
-        """
-        if not self.ws or not self._connected:
+        # Exhausted all retries
+        self._disconnect_event.set()
+        raise ConnectionError(
+            f"Failed to connect to {self.uri} after {max_retries} attempts"
+        )
+
+    async def send_update(self, update_dict: dict):
+        """Send weight update + loss to the server."""
+        if self.ws is None or not self._connected:
             logger.warning("Cannot send update: not connected")
             return
 
-        message = {
-            "type": "weight_update",
-            "client_id": self.client_id,
-            "task": self.task,
-            "round_num": update.get("round_num", 0),
-            "global_round_received": update.get("global_round_received", 0),
-            "weights": update.get("weights", ""),
-            "num_samples": update.get("num_samples", 0),
-            "local_loss": update.get("local_loss", 0.0),
-            "privacy_budget": update.get("privacy_budget", {}),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+        # Prepare payload
+        payload = dict(update_dict)
+        payload["type"] = "weight_update"
+        payload["client_id"] = self.client_id
+        payload["task"] = self.task
+        
+        # Apply Secure Aggregation Masking if enabled
+        if self.sa_client.enabled and "weights" in payload:
+            raw_weights = payload["weights"]
+            # To mask, SA needs a list of all client IDs currently paired. We'll extract them from generated keys
+            if hasattr(self.sa_client, "key_manager") and self.sa_client.key_manager:
+                all_ids = list(self.sa_client.key_manager.pairwise_keys.keys()) + [self.sa_client.client_id]
+                rnd = payload.get("round_num", 0)
+                payload["weights"] = self.sa_client.mask_update(raw_weights, all_ids, rnd)
+
+        # Base64 encode weights
+        if "weights" in payload:
+            payload["weights"] = self._serialize_weights(payload["weights"])
+
+        payload["timestamp"] = datetime.now(timezone.utc).isoformat()
 
         try:
-            await self.ws.send(json.dumps(message))
-            logger.debug("Sent weight update: round=%d", update.get("round_num", 0))
+            await self.ws.send(json.dumps(payload))
+            logger.debug("Sent weight update: round=%d", payload.get("round_num", 0))
         except Exception as e:
             logger.error("Failed to send update: %s", e)
             self._connected = False
 
-    async def receive_loop(self) -> None:
+    async def listen_loop(self) -> None:
         """Dispatches received messages."""
         if not self.ws:
             return
@@ -489,22 +577,103 @@ class WSClient:
                 try:
                     logger.info("Received raw message string of length %d", len(message))
                     data = json.loads(message)
-                    msg_type = data.get("type", "")
+                    if isinstance(data, str):
+                        data = json.loads(data)
+                        
+                    msg_type = data.get("type", "") if isinstance(data, dict) else ""
                     logger.info("Decoded message type: %s", msg_type)
 
-                    if msg_type == "global_model":
+                    async def _apply_global_model_payload(payload: dict):
+                        global_round = payload.get("round_num", 0)
+                        self.current_round = global_round
                         logger.info(
                             "Received global model: task=%s, round=%d",
-                            data.get("task", ""), data.get("round_num", 0),
+                            payload.get("task", ""), global_round,
                         )
-                        await self.on_global_model(data)
+                        if "weights" in payload:
+                            weights_dict = self._deserialize_weights(payload["weights"])
+                            await self._fire_event(
+                                "global_model",
+                                global_round,
+                                weights_dict,
+                                payload.get("assigned_chunk"),
+                            )
+
+                    if msg_type == "global_model":
+                        await _apply_global_model_payload(data)
+
+                    elif msg_type == "global_model_start":
+                        total_chunks = int(data.get("total_chunks", 0))
+                        if total_chunks <= 0:
+                            logger.warning("Invalid global_model_start: total_chunks=%s", data.get("total_chunks"))
+                            self._global_model_chunks = None
+                        else:
+                            self._global_model_chunks = {
+                                "meta": {
+                                    "task": data.get("task", self.task),
+                                    "round_num": data.get("round_num", 0),
+                                    "version": data.get("version", ""),
+                                    "timestamp": data.get("timestamp", ""),
+                                    "assigned_chunk": data.get("assigned_chunk"),
+                                },
+                                "total": total_chunks,
+                                "parts": [None] * total_chunks,
+                            }
+
+                    elif msg_type == "global_model_chunk":
+                        self._last_chunk_time = time.monotonic()
+                        assembly = self._global_model_chunks
+                        if assembly is None:
+                            continue
+                        idx = int(data.get("chunk_index", -1))
+                        total = int(data.get("total_chunks", assembly["total"]))
+                        if total != assembly["total"]:
+                            logger.warning("Chunk total mismatch during global model assembly; dropping partial model.")
+                            self._global_model_chunks = None
+                            continue
+                        if 0 <= idx < assembly["total"]:
+                            assembly["parts"][idx] = data.get("data", "")
+
+                    elif msg_type == "global_model_end":
+                        assembly = self._global_model_chunks
+                        if assembly is None:
+                            continue
+                        missing = [i for i, part in enumerate(assembly["parts"]) if part is None]
+                        if missing:
+                            logger.warning(
+                                "global_model_end received with missing chunks: %d missing (first=%s)",
+                                len(missing), missing[0],
+                            )
+                            self._global_model_chunks = None
+                            continue
+                        joined = "".join(assembly["parts"])
+                        payload = dict(assembly["meta"])
+                        payload["weights"] = joined
+                        await _apply_global_model_payload(payload)
+                        self._global_model_chunks = None
+                            
+                    elif msg_type == "key_broadcast":
+                        # Setup secure aggregation round when keys are broadcasted
+                        if self.sa_client.enabled:
+                            public_keys = data.get("public_keys", {})
+                            # Convert string keys back to int for SA module if necessary, or hash string
+                            parsed_keys = {}
+                            for cid, pkey in public_keys.items():
+                                try:
+                                    num_cid = int(cid.replace("client_", ""))
+                                except ValueError:
+                                    num_cid = abs(hash(cid)) % (10 ** 8)
+                                parsed_keys[num_cid] = pkey
+                                
+                            self.sa_client.setup_round(parsed_keys, round_number=self.current_round)
+                            logger.info("Secure aggregation keys received and round setup for round %d", self.current_round)
 
                     elif msg_type == "rejected":
                         logger.warning(
                             "Update rejected by server: reason=%s, round=%d",
                             data.get("reason", "unknown"), data.get("round_num", 0),
                         )
-                        await self.on_rejected(data)
+                        await self._fire_event("rejected", data)
 
                     elif msg_type == "status":
                         logger.info(
@@ -545,6 +714,25 @@ class WSClient:
         except Exception as e:
             logger.info("WebSocket receive loop ended: %s", e)
             self._connected = False
+            self._disconnect_event.set()
+
+    async def reconnect(self, max_retries: int = 5) -> asyncio.Task:
+        """Tear down current connection and establish a new one.
+
+        Resets internal state (_connected, _disconnect_event, partial chunk
+        buffers) and calls connect() again. Returns a new listen_task.
+        """
+        # Tear down old connection
+        if self.ws:
+            try:
+                await self.ws.close()
+            except Exception:
+                pass
+        self._connected = False
+        self._disconnect_event = asyncio.Event()  # fresh event
+        self._global_model_chunks = None
+        self.ws = None
+        return await self.connect(max_retries=max_retries)
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
@@ -554,6 +742,7 @@ class WSClient:
             except Exception:
                 pass
             self._connected = False
+            self._disconnect_event.set()
 
 
 # ============================================================================
@@ -585,7 +774,7 @@ async def main():
     auth_token = os.environ.get("AUTH_TOKEN", "")
     dataset = os.environ.get("DATASET", "femnist")
     if not auth_token:
-        import urllib.request, json, time
+        import urllib.request, json  # NB: do NOT import time here — it shadows the module-level import and causes UnboundLocalError later
         rest_url = server_url.replace("ws://", "http://").replace("wss://", "https://").replace("/ws/fl", "/nodes/register")
         data = json.dumps({
             "role": client_role,
@@ -663,14 +852,13 @@ async def main():
         current_global_weights[name] = param.data.cpu().numpy().copy()
 
     # Callbacks
-    async def on_global_model(data: dict):
+    async def on_global_model(round_num: int, weights_dict: dict, assigned_chunk: int = None):
         nonlocal current_global_weights, current_global_round, data_loader, assigned_chunk_id
         
         logger.info("on_global_model started!")
         # Initialize DataLoader if not already done using the server-assigned chunk
-        server_chunk = data.get("assigned_chunk")
-        if data_loader is None and server_chunk is not None:
-            assigned_chunk_id = server_chunk
+        if data_loader is None and assigned_chunk is not None:
+            assigned_chunk_id = assigned_chunk
             
             # Re-read from environ to avoid Python scoping closure issues
             _mongo_uri = os.environ.get("MONGO_URI", "")
@@ -688,9 +876,8 @@ async def main():
                 data_loader = await asyncio.to_thread(leaf_loader.get_dataloader)
                 logger.info("Data loaded via LEAFLoader using assigned chunk %d", assigned_chunk_id)
         
-        weights_b64 = data.get("weights", "")
-        new_global = deserialize_weights(weights_b64)
-        alpha = data.get("personalization_alpha", 0.0)
+        new_global = weights_dict
+        alpha = 0.0 # TODO: support Personalization alpha later if provided natively
         if alpha > 0.0 and current_global_weights:
             # Personalized blend: keep some local knowledge from previous round
             current_global_weights = {
@@ -699,7 +886,7 @@ async def main():
             }
         else:
             current_global_weights = new_global
-        current_global_round = data.get("round_num", 0)
+        current_global_round = round_num
         new_model_event.set()
 
     async def on_rejected(data: dict):
@@ -709,21 +896,78 @@ async def main():
         )
 
     # Step 4: Create WebSocket client
-    ws_client = WSClient(server_url, auth_token, client_id, dataset,
-                         on_global_model, on_rejected)
+    import config as _config
+    config = _config.settings
+    
+    ws_client = WSClient(
+        uri=server_url, 
+        auth_token=auth_token,
+        client_id=client_id, 
+        participant="unknown", 
+        task=dataset, 
+        role=client_role, 
+        config=config
+    )
+    ws_client.on("global_model", on_global_model)
+    ws_client.on("rejected", on_rejected)
 
-    # Connect (with retries)
-    await ws_client.connect()
+    # Connect (with retries and key broadcast handling internal to listen_loop/connect)
+    listen_task = await ws_client.connect()
 
-    # Start receive loop in background
-    receive_task = asyncio.create_task(ws_client.receive_loop())
+    # Wait for initial global model — chunk-aware: keep waiting while chunks are arriving
+    MAX_MODEL_RECONNECTS = 3
+    CHUNK_IDLE_TIMEOUT = 30.0  # seconds to wait with no chunk activity before giving up
+    for _model_attempt in range(MAX_MODEL_RECONNECTS + 1):
+        logger.info("Waiting for initial global model from server...")
+        _deadline_inactive = time.monotonic() + 90.0  # 90s if no chunks ever arrive
+        while True:
+            # How long until we consider the transfer stalled?
+            now = time.monotonic()
+            if ws_client._last_chunk_time > 0:
+                # Chunks are flowing — extend deadline relative to last chunk
+                remaining = (ws_client._last_chunk_time + CHUNK_IDLE_TIMEOUT) - now
+            else:
+                # No chunks yet — use the initial deadline
+                remaining = _deadline_inactive - now
 
-    # Wait for initial global model
-    logger.info("Waiting for initial global model from server...")
-    try:
-        await asyncio.wait_for(new_model_event.wait(), timeout=60.0)
-    except asyncio.TimeoutError:
+            if remaining <= 0:
+                break  # Timed out
+
+            model_task = asyncio.create_task(new_model_event.wait())
+            disconnect_task = asyncio.create_task(ws_client._disconnect_event.wait())
+            done, pending = await asyncio.wait(
+                [model_task, disconnect_task],
+                timeout=min(remaining, 5.0),  # Check every 5s so we can re-evaluate chunk activity
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+
+            if new_model_event.is_set():
+                break
+            if ws_client._disconnect_event.is_set():
+                break
+
+        if new_model_event.is_set():
+            break  # Got the model successfully
+
+        # Connection dropped before model arrived — try reconnecting
+        if ws_client._disconnect_event.is_set() and _model_attempt < MAX_MODEL_RECONNECTS:
+            logger.warning(
+                "Connection lost during model download. Reconnecting (%d/%d)...",
+                _model_attempt + 1, MAX_MODEL_RECONNECTS,
+            )
+            listen_task.cancel()
+            try:
+                await listen_task
+            except asyncio.CancelledError:
+                pass
+            new_model_event.clear()
+            listen_task = await ws_client.reconnect()
+            continue
+
         logger.warning("Timeout waiting for initial global model. Using local init.")
+        break
         
     if data_loader is None:
         logger.info("Initializing local data loader due to missing or delayed server chunk assignment...")
@@ -740,8 +984,39 @@ async def main():
     new_model_event.clear()
 
     # Step 5: Main FL training loop
+    reconnect_budget = 3  # Allow a few reconnects during training
     try:
         while True:
+            # ── Check for disconnection before each round ──
+            if not ws_client._connected and listen_task.done():
+                if reconnect_budget > 0:
+                    reconnect_budget -= 1
+                    logger.warning(
+                        "Server connection lost. Attempting reconnect (%d left)...",
+                        reconnect_budget,
+                    )
+                    listen_task.cancel()
+                    try:
+                        await listen_task
+                    except asyncio.CancelledError:
+                        pass
+                    try:
+                        listen_task = await ws_client.reconnect()
+                    except ConnectionError:
+                        logger.error("Reconnect failed. Exiting training loop.")
+                        break
+                    # Wait briefly for a fresh global model after reconnect
+                    new_model_event.clear()
+                    try:
+                        await asyncio.wait_for(new_model_event.wait(), timeout=90.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("No global model after reconnect — continuing with current weights.")
+                    new_model_event.clear()
+                    continue
+                else:
+                    logger.info("Server connection lost. No reconnect budget remaining. Exiting.")
+                    break
+
             local_round += 1
 
             # Create trainer with current global weights
@@ -780,14 +1055,11 @@ async def main():
             processed_diff = privacy_engine.process(result["weight_diff"])
             budget = privacy_engine.get_privacy_budget()
 
-            # Serialize weights
-            weights_b64 = serialize_weights(processed_diff)
-
             # Send to server
             await ws_client.send_update({
                 "round_num": local_round,
                 "global_round_received": current_global_round,
-                "weights": weights_b64,
+                "weights": processed_diff,
                 "num_samples": result["num_samples"],
                 "local_loss": result.get("local_loss", result.get("loss", 0.0)),
                 "privacy_budget": budget,
@@ -800,10 +1072,26 @@ async def main():
                 result["num_samples"], budget["epsilon"],
             )
 
-            # Wait for new global model or timeout
+            # Wait for new global model, disconnect signal, or timeout
             new_model_event.clear()
             try:
-                await asyncio.wait_for(new_model_event.wait(), timeout=120.0)
+                # Race: wait for either new model or disconnect
+                done, _ = await asyncio.wait(
+                    [
+                        asyncio.create_task(new_model_event.wait()),
+                        asyncio.create_task(ws_client._disconnect_event.wait()),
+                    ],
+                    timeout=120.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                # Cancel pending tasks
+                for t in _:
+                    t.cancel()
+                if ws_client._disconnect_event.is_set():
+                    logger.info("Disconnect detected while waiting for global model. Exiting.")
+                    break
+                if not done:
+                    logger.info("No new global model received in 120s, continuing training")
             except asyncio.TimeoutError:
                 logger.info("No new global model received in 120s, continuing training")
 
@@ -814,9 +1102,9 @@ async def main():
     except Exception as e:
         logger.exception("Client error: %s", e)
     finally:
-        receive_task.cancel()
+        listen_task.cancel()
         try:
-            await receive_task
+            await listen_task
         except asyncio.CancelledError:
             pass
         await ws_client.close()

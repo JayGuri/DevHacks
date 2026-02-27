@@ -17,6 +17,8 @@ if _repo_root not in sys.path:
 
 from core.jwt_auth import decode_token as _core_decode_token  # noqa: E402
 from detection.anomaly import check_l2_norm
+from detection.gatekeeper import Gatekeeper
+from privacy.secure_aggregation import SecureAggregationProtocol
 
 logger = logging.getLogger("fedbuff.server")
 
@@ -25,6 +27,10 @@ connected_clients: dict = {}
 #              "participant": str, "task": str, "connected_at": float,
 #              "last_heartbeat": float, "is_joining": bool,
 #              "trust_score": float | None, "trust_updated_at": float | None}}
+
+# Chunked model delivery settings (helps tunnels/proxies that drop very large WS frames)
+GLOBAL_MODEL_CHUNK_SIZE = 256_000
+GLOBAL_MODEL_CHUNK_THRESHOLD = 800_000
 
 
 def verify_token(token: str) -> dict:
@@ -56,6 +62,7 @@ def register_client(client_id: str, websocket, role: str, display_name: str,
         "is_joining": True,   # grace period until first weight_update received
         "trust_score": None,
         "trust_updated_at": None,
+        "public_key": None,  # for secure aggregation
     }
     logger.info(
         "Client registered: %s (%s) participant=%s task=%s chunk=%d",
@@ -102,6 +109,89 @@ def require_role(required_role: str):
         return payload
 
     return _dependency
+
+
+async def send_global_model_message(
+    websocket,
+    *,
+    task: str,
+    round_num: int,
+    weights: str,
+    version: str,
+    timestamp: str,
+    assigned_chunk: int = -1,
+    client_id: str = "",
+) -> None:
+    """Send global model as either single message or chunked stream.
+
+    Uses chunked mode for large payloads to avoid proxy/tunnel frame drops.
+    Updates the client's last_heartbeat during chunk delivery so the heartbeat
+    checker doesn't kill the connection mid-transfer.
+    """
+    if not isinstance(weights, str):
+        await websocket.send_json({
+            "type": "global_model",
+            "task": task,
+            "round_num": round_num,
+            "weights": weights,
+            "version": version,
+            "timestamp": timestamp,
+            "assigned_chunk": assigned_chunk,
+        })
+        return
+
+    if len(weights) <= GLOBAL_MODEL_CHUNK_THRESHOLD:
+        await websocket.send_json({
+            "type": "global_model",
+            "task": task,
+            "round_num": round_num,
+            "weights": weights,
+            "version": version,
+            "timestamp": timestamp,
+            "assigned_chunk": assigned_chunk,
+        })
+        return
+
+    chunks = [
+        weights[i:i + GLOBAL_MODEL_CHUNK_SIZE]
+        for i in range(0, len(weights), GLOBAL_MODEL_CHUNK_SIZE)
+    ]
+    total_chunks = len(chunks)
+
+    await websocket.send_json({
+        "type": "global_model_start",
+        "task": task,
+        "round_num": round_num,
+        "version": version,
+        "timestamp": timestamp,
+        "assigned_chunk": assigned_chunk,
+        "total_chunks": total_chunks,
+    })
+
+    for idx, part in enumerate(chunks):
+        await websocket.send_json({
+            "type": "global_model_chunk",
+            "round_num": round_num,
+            "chunk_index": idx,
+            "total_chunks": total_chunks,
+            "data": part,
+        })
+        # Update heartbeat so the checker doesn't kill us mid-transfer
+        if client_id and client_id in connected_clients:
+            connected_clients[client_id]["last_heartbeat"] = time.time()
+        # Yield to event loop every 5 chunks to keep other tasks responsive
+        if idx % 5 == 4:
+            await asyncio.sleep(0)
+
+    await websocket.send_json({
+        "type": "global_model_end",
+        "task": task,
+        "round_num": round_num,
+        "version": version,
+        "timestamp": timestamp,
+        "assigned_chunk": assigned_chunk,
+        "total_chunks": total_chunks,
+    })
 
 
 async def heartbeat_checker(
@@ -413,18 +503,44 @@ async def handle_websocket(
     participant = payload.get("participant", "unknown")
     token_task = payload.get("task", task)
 
+    # Note: Gatekeeper and Secure Aggregation state are currently handled within the AsyncBuffer or per handle_websocket loop
+    # For now, we will handle secure aggregation keys at the connection phase.
+    
     # Step 2: Validate task
     if task not in config.SUPPORTED_TASKS:
         await websocket.close(code=1008, reason=f"Unsupported task: {task}")
         return
 
+    # Step 2a: Send immediate connection ack so proxies/tunnels see early traffic
+    # even if chunk assignment or downstream I/O is slow.
+    try:
+        await websocket.send_json({
+            "type": "connected",
+            "task": task,
+            "client_id": client_id,
+        })
+    except Exception as exc:
+        logger.warning("Failed to send initial connected ack to %s: %s", client_id, exc)
+        await websocket.close(code=1011, reason="Failed during connection setup")
+        return
+
     # Step 2b: Chunk assignment (if ChunkManager available)
     assigned_chunk = -1
     if chunk_manager is not None:
-        success, assigned_chunk, msg = await asyncio.to_thread(
-            chunk_manager.assign_chunk,
-            client_id=client_id, dataset=task,
-        )
+        try:
+            success, assigned_chunk, msg = await asyncio.wait_for(
+                asyncio.to_thread(
+                    chunk_manager.assign_chunk,
+                    client_id=client_id, dataset=task,
+                ),
+                timeout=8.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[SERVER] Chunk assignment timeout for %s (task=%s). Proceeding with chunk=-1.",
+                client_id, task,
+            )
+            success, assigned_chunk, msg = True, -1, "chunk assignment timeout"
         if not success:
             logger.warning(
                 "[SERVER] Chunk assignment failed for %s: %s", client_id, msg,
@@ -467,16 +583,22 @@ async def handle_websocket(
 
     try:
         # Step 5: Send current global model for this task (include chunk assignment)
+        send_started_at = time.time()
         latest = model_history.get_latest(task)
-        await websocket.send_json({
-            "type": "global_model",
-            "task": task,
-            "round_num": latest["round"],
-            "weights": latest["weights"],
-            "version": latest["version"],
-            "timestamp": latest["timestamp"],
-            "assigned_chunk": assigned_chunk,
-        })
+        await send_global_model_message(
+            websocket,
+            task=task,
+            round_num=latest["round"],
+            weights=latest["weights"],
+            version=latest["version"],
+            timestamp=latest["timestamp"],
+            assigned_chunk=assigned_chunk,
+            client_id=client_id,
+        )
+        logger.info(
+            "Initial global_model sent to %s in %.3fs (task=%s, round=%d, chunk=%d)",
+            client_id, time.time() - send_started_at, task, latest["round"], assigned_chunk,
+        )
         logger.info(
             "Sent global model to %s: task=%s, round=%d, chunk=%d",
             client_id, task, latest["round"], assigned_chunk,
@@ -497,7 +619,30 @@ async def handle_websocket(
                 data = await asyncio.to_thread(json.loads, message)
                 msg_type = data.get("type", "")
 
-                if msg_type == "weight_update":
+                if msg_type == "public_key":
+                    public_key = data.get("public_key")
+                    if public_key is not None:
+                        connected_clients[client_id]["public_key"] = public_key
+                        logger.info("Received public key from %s", client_id)
+                        # Let the server periodically broadcast keys or broadcast now?
+                        # For simplicity, we could trigger a broadcast to all clients in the same task
+                        all_public_keys = {
+                            cid: info["public_key"]
+                            for cid, info in connected_clients.items()
+                            if info.get("task") == task and info.get("public_key") is not None
+                        }
+                        # Send key_broadcast to all task clients
+                        for cid, info in connected_clients.items():
+                            if info.get("task") == task and "websocket" in info:
+                                try:
+                                    await info["websocket"].send_json({
+                                        "type": "key_broadcast",
+                                        "public_keys": all_public_keys
+                                    })
+                                except Exception as e:
+                                    pass
+
+                elif msg_type == "weight_update":
                     # Update heartbeat — clears is_joining grace period
                     update_heartbeat(client_id)
 
@@ -515,7 +660,8 @@ async def handle_websocket(
                     # Deserialize weights
                     weights = model_history.deserialize_weights(weights_b64)
 
-                    # Layer 1: Gatekeeper L2 norm check
+                    # Layer 1: We will use the buffer's gatekeeper logically, but for fast rejection
+                    # we still do a static gatekeeper norm check or keep L2 threshold
                     passed, norm = check_l2_norm(weights, config.L2_NORM_THRESHOLD)
 
                     if not passed:
@@ -546,7 +692,7 @@ async def handle_websocket(
                             "task": task,
                             "round_num": round_num,
                             "global_round_received": global_round_received,
-                            "weights": weights,
+                            "weights": weights,  # Note: Actually it's masked weights if DP/SA is enabled on client!
                             "num_samples": num_samples,
                             "local_loss": local_loss,
                             "timestamp": timestamp,
@@ -582,6 +728,7 @@ async def handle_websocket(
                             "local_loss": local_loss,
                             "norm": norm,
                             "trust_score": current_trust,
+                            "epsilon": privacy_epsilon,
                         })
                         trust_fmt = f"{current_trust:.4f}" if current_trust is not None else "N/A"
                         logger.info(

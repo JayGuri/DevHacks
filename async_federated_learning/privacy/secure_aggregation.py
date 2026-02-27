@@ -61,7 +61,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from async_federated_learning.privacy.key_agreement import KeyAgreementManager
+from privacy.key_agreement import KeyAgreementManager
 
 logger = logging.getLogger(__name__)
 
@@ -455,7 +455,7 @@ def compare_privacy_methods(
     Dict[str, Dict[str, float]]
         Comparison metrics for both methods
     """
-    from async_federated_learning.privacy.dp import DifferentialPrivacyMechanism
+    from privacy.dp import DifferentialPrivacyMechanism
     
     results = {}
     

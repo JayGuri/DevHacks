@@ -114,7 +114,7 @@ def _load_demo_tokens_for_task(task: str) -> tuple[str, str] | tuple[None, None]
 
 async def run_client(base_ws: str, token: str, task: str, delay_before_send: float, value: float):
     url = f"{base_ws}?token={token}&task={task}"
-    async with websockets.connect(url, max_size=None, ping_interval=None, ping_timeout=None) as ws:
+    async with websockets.connect(url, max_size=None, ping_interval=20, ping_timeout=30) as ws:
         first = json.loads(await ws.recv())
         global_round = int(first.get("round_num", 0))
         payload_weights = first.get("weights", {})

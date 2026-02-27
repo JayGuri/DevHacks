@@ -1,7 +1,7 @@
 {
   "max_nodes_per_task": 100,
   "task_counts": {
-    "femnist": 12
+    "femnist": 16
   },
   "nodes": {
     "node-fem-000-b59e32": {
@@ -111,6 +111,42 @@
       "node_index": 11,
       "total_nodes": 100,
       "created_at": "2026-02-25T18:22:02.599652+00:00"
+    },
+    "node-fem-012-daf87a": {
+      "node_id": "node-fem-012-daf87a",
+      "display_name": "LegitClient-1",
+      "role": "legitimate_client",
+      "task": "femnist",
+      "node_index": 12,
+      "total_nodes": 100,
+      "created_at": "2026-02-25T18:53:47.913467+00:00"
+    },
+    "node-fem-013-613b0c": {
+      "node_id": "node-fem-013-613b0c",
+      "display_name": "LegitClient-2",
+      "role": "legitimate_client",
+      "task": "femnist",
+      "node_index": 13,
+      "total_nodes": 100,
+      "created_at": "2026-02-25T18:53:48.848523+00:00"
+    },
+    "node-fem-014-ddb3ff": {
+      "node_id": "node-fem-014-ddb3ff",
+      "display_name": "LegitClient-3",
+      "role": "legitimate_client",
+      "task": "femnist",
+      "node_index": 14,
+      "total_nodes": 100,
+      "created_at": "2026-02-25T18:53:50.326741+00:00"
+    },
+    "node-fem-015-094f95": {
+      "node_id": "node-fem-015-094f95",
+      "display_name": "MaliciousClient-1",
+      "role": "malicious_client",
+      "task": "femnist",
+      "node_index": 15,
+      "total_nodes": 100,
+      "created_at": "2026-02-25T18:53:51.412353+00:00"
     }
   }
 }

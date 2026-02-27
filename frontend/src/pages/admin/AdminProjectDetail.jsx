@@ -36,6 +36,7 @@ import SABDPanel from "@/components/fl/SABDPanel";
 import GanttTimeline from "@/components/fl/GanttTimeline";
 import PrivacyGauge from "@/components/fl/PrivacyGauge";
 import NetworkTopology from "@/components/fl/NetworkTopology";
+import LiveCLIMetrics from "@/components/fl/LiveCLIMetrics";
 import PageSkeleton from "@/components/dashboard/PageSkeleton";
 import { fadeIn } from "@/lib/animations";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -68,7 +69,7 @@ import {
 } from "@/components/ui/select";
 
 const SESSION_KEY = (id) => `tab-${id}-admin-detail`;
-const VALID_TABS = ["server", "nodes", "members", "config"];
+const VALID_TABS = ["server", "cli", "nodes", "members", "config"];
 
 export default function AdminProjectDetail() {
   const { id } = useParams();
@@ -275,7 +276,7 @@ export default function AdminProjectDetail() {
         <LockKeyhole size={10} className="mr-1" />
         Private
       </Badge>
-    : <Badge className="bg-emerald-500/10 text-xs text-emerald-600 dark:text-emerald-400">
+      : <Badge className="bg-emerald-500/10 text-xs text-emerald-600 dark:text-emerald-400">
         <Globe size={10} className="mr-1" />
         Public
       </Badge>;
@@ -298,6 +299,7 @@ export default function AdminProjectDetail() {
       <Tabs value={defaultTab} onValueChange={handleTabChange}>
         <TabsList className="mb-4">
           <TabsTrigger value="server">Server View</TabsTrigger>
+          <TabsTrigger value="cli">Live CLI</TabsTrigger>
           <TabsTrigger value="nodes">Nodes</TabsTrigger>
           <TabsTrigger value="members">Members</TabsTrigger>
           <TabsTrigger value="config">Configuration</TabsTrigger>
@@ -399,6 +401,17 @@ export default function AdminProjectDetail() {
                     {amLead && <ControlPanel fl={fl} projectId={id} />}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Live CLI Stream */}
+            {defaultTab === "cli" && (
+              <div className="space-y-4">
+                <div className="mb-4">
+                  <h2 className="font-display text-lg sm:text-xl">Terminal</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">Real-time metrics streaming from the federated learning backend Engine.</p>
+                </div>
+                <LiveCLIMetrics projectId={id} isEmbedded={false} />
               </div>
             )}
 
@@ -536,7 +549,7 @@ export default function AdminProjectDetail() {
                             <Badge variant="outline" className="text-xs">
                               {m.globalRole === "TEAM_LEAD" ?
                                 "Team Lead"
-                              : "Contributor"}
+                                : "Contributor"}
                             </Badge>
                           </TableCell>
                           <TableCell>
@@ -557,12 +570,12 @@ export default function AdminProjectDetail() {
                                   </SelectItem>
                                 </SelectContent>
                               </Select>
-                            : <Badge
+                              : <Badge
                                 variant="outline"
                                 className={cn(
                                   m.projectRole === "lead" ?
                                     "border-cyan-500 text-cyan-600 dark:text-cyan-400"
-                                  : "",
+                                    : "",
                                 )}
                               >
                                 {m.projectRole}
@@ -656,7 +669,7 @@ export default function AdminProjectDetail() {
                           >
                             <LockKeyhole size={10} className="mr-1" /> Private
                           </Badge>
-                        : <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                          : <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
                             <Globe size={10} className="mr-1" /> Public
                           </Badge>
                         }

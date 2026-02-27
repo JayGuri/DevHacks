@@ -20,7 +20,7 @@ from aggregation.fedavg import fedavg
 from aggregation.reputation import reputation_aggregated
 from aggregation.staleness import compute_staleness_weights, combine_trust_weights
 from aggregation.trimmed_mean import trimmed_mean
-from detection.anomaly import check_l2_norm
+from detection.gatekeeper import Gatekeeper
 from detection.sabd import run_sabd
 from detection.outlier_filter import OutlierFilter
 
@@ -126,6 +126,12 @@ class Aggregator:
         self.strategy = strategy.lower()
         self.config = config
         self._trust_history = {}
+        
+        # Initialize the stateful Gatekeeper
+        l2_factor = getattr(self.config, 'gatekeeper_l2_factor', 3.0)
+        max_l2 = getattr(self.config, 'gatekeeper_max_threshold', 1000.0)
+        self.gatekeeper = Gatekeeper(l2_threshold_factor=l2_factor, max_l2_threshold=max_l2)
+        
         logger.info("Aggregator initialized: strategy=%s", self.strategy)
 
     @staticmethod
@@ -218,22 +224,24 @@ class Aggregator:
             logger.warning("Aggregator.aggregate: no updates to process")
             return result
 
-        # --- Layer 1: L2 Norm Gatekeeper ---
-        threshold = getattr(self.config, 'L2_NORM_THRESHOLD', 500.0)
-        passed_updates = []
-        for u in updates:
-            client_id = u.get("client_id", "unknown")
-            weights = u.get("weights", {})
-            ok, norm_val = check_l2_norm(weights, threshold)
-            if ok:
-                result.gatekeeper_passed.append(client_id)
-                passed_updates.append(u)
-            else:
-                result.gatekeeper_rejected.append(client_id)
-                logger.warning(
-                    "Gatekeeper REJECTED client=%s (norm=%.4f > threshold=%.4f)",
-                    client_id, norm_val, threshold,
-                )
+        # --- Layer 1: Adaptive L2 Norm Gatekeeper ---
+        # Format updates for gatekeeper
+        gk_updates = [
+            {'client_id': u.get("client_id", "unknown"), 'model_update': u.get("weights", {}), 'raw_update': u}
+            for u in updates
+        ]
+        
+        if getattr(self.config, 'use_gatekeeper', True):
+            accepted_gk, rejected_gk, _ = self.gatekeeper.inspect_updates(gk_updates, current_round)
+            passed_updates = [u['raw_update'] for u in accepted_gk]
+            for u in accepted_gk:
+                result.gatekeeper_passed.append(u['client_id'])
+            for u in rejected_gk:
+                result.gatekeeper_rejected.append(u['client_id'])
+        else:
+            passed_updates = updates
+            for u in updates:
+                result.gatekeeper_passed.append(u.get("client_id", "unknown"))
 
         if not passed_updates:
             logger.warning("All updates rejected by gatekeeper")
