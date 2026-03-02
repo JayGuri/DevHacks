@@ -3,13 +3,13 @@
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-green.svg)](https://fastapi.tiangolo.com/)
 
-FedBuff is an advanced, production-ready Asynchronous Federated Learning framework designed to address the critical bottlenecks in traditional synchronous Federated Learning: stragglers (slow clients) and Byzantine failures (malicious clients or corrupted data).
+ARFL is an advanced, production-ready Asynchronous Federated Learning framework designed to address the critical bottlenecks in traditional synchronous Federated Learning: stragglers (slow clients) and Byzantine failures (malicious clients or corrupted data).
 
 By utilizing an **event-driven asynchronous buffer** and a **two-layer defense mechanism**, FedBuff allows for continuous, secure, and robust global model updates without waiting for the slowest participants.
 
 ## 🌟 Key Features
 
-*   **Asynchronous Buffered Aggregation (FedBuff)**: Clients push updates independently. The server aggregates automatically once a configurable buffer size ($K$) is reached, eliminating the straggler problem.
+*   **Asynchronous Buffered Aggregation**: Clients push updates independently. The server aggregates automatically once a configurable buffer size ($K$) is reached, eliminating the straggler problem.
 *   **Staleness-Aware Learning**: Implements staleness discounting (polynomial or exponential decay) to ensure delayed updates from slow clients don't degrade the global model.
 *   **Two-Layer Byzantine Defense**:
     *   *Layer 1 (Targeted Defense)*: An L2-Norm Gatekeeper efficiently filters out extreme anomalous weights.
@@ -104,4 +104,4 @@ All hyperparameters and system settings are managed centrally in `config.py`. Ke
 *   `USE_DP`: Toggle Differential Privacy.
 
 ## 🛡️ License
-This project is developed for DevHacks 2026. All rights reserved.
+This project is developed for CSI-ACE DevHacks 2026. All rights reserved.
